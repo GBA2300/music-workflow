@@ -85,14 +85,45 @@ DEFAULT_CLOSE_SELECTORS = [
     "[class*='popup__close']",
 ]
 
-# 文字类关闭按钮（找不到图标按钮时才考虑，按配置开关控制）
-DEFAULT_TEXT_SELECTORS = [
+# ★ 确认类按钮（★ 首选方案 ★）
+#
+# 为什么优先点「确认」而不是强行删掉遮罩：
+#   点确认走的是页面自己的正常关闭流程 —— 弹窗会自己关掉，页面的内部状态
+#   （比如"这个公告我读过了"）也保持一致。而直接把遮罩 DOM 删掉属于绕过页面逻辑：
+#   页面以为弹窗还开着，后续步骤可能因此错乱，更要命的是会连带干掉
+#   那些**需要人看一眼**的重要弹窗（额度提醒、验证提示、授权确认）。
+#
+# 所以策略是：能点确认就点确认，点不到再想别的办法，删遮罩是最后手段且默认关闭。
+DEFAULT_CONFIRM_SELECTORS = [
     "我知道了",
     "我知道啦",
     "我已知晓",
+    "知道了",
+    "知道了，谢谢",
+    "确定",
+    "确认",
     "好的",
+    "好的，知道了",
     "明白",
+    "明白了",
+    "同意",
+    "允许",
+    "继续",
+    "继续上传",
+    "立即体验",
+    "开始使用",
     "不再提示",
+    "保存",
+    "完成",
+    "上传",
+    "下一步",
+    "OK",
+    "ok",
+    "Yes",
+]
+
+# 关闭类按钮（确认类找不到时才考虑）
+DEFAULT_TEXT_SELECTORS = [
     "以后再说",
     "稍后再说",
     "下次再说",
@@ -105,82 +136,282 @@ DEFAULT_TEXT_SELECTORS = [
     "✕",
 ]
 
+# 文字里含这些词的按钮一律不点 —— 它们的语义是"确认删除"，点了就出事了
+DEFAULT_TEXT_BLOCKWORDS = [
+    "删除",
+    "移除",
+    "清空",
+    "重置",
+    "注销",
+    "解绑",
+    "放弃",
+    "终止",
+]
+
+# 弹窗底部的主按钮（语义上就是"确认"，番茄/Arco 和 MiniMax/AntD 都是这套）
+#
+# 为什么需要它：番茄的封面裁剪弹窗，确认按钮是 .arco-modal-footer 里的
+# .arco-btn-primary，文案可能是「确定」「保存」「完成」中的任意一个，
+# 纯靠文字匹配不够稳。弹窗底部的**主按钮**本身就代表"确认"，比猜文案可靠。
+#
+# 风险与对策：万一弹窗是「是否删除」，footer 主按钮就是"删除"——
+# 所以这类元素会额外做一次文字检查，命中 DEFAULT_TEXT_BLOCKWORDS 就跳过。
+DEFAULT_CONFIRM_BUTTONS = [
+    ".arco-modal-footer button.arco-btn-primary",
+    ".arco-modal-footer .arco-btn-primary",
+    ".ant-modal-footer button.ant-btn-primary",
+    ".ant-modal-confirm-btns button.ant-btn-primary",
+]
+
+# ★★★ 弹窗容器白名单（安全核心，改动前务必读完下面的说明）★★★
+#
+# 关闭按钮【只】在这些容器里面找，绝不扫描整个页面。
+#
+# 为什么必须这样：番茄上传页的「歌手名 / 词作者 / 曲作者 / 制作人」是标签式输入框，
+# 每个已填好的标签旁边都有一个删除用的 ×（形如 .tag-close-icon）。
+# 早期版本在整个页面扫 class 里带 close 的图标，结果上传第 2 首歌时，
+# 把第 1 首歌已填好的四个标签全点掉了 —— 用户已填信息被静默清空。
+# 这类 × 的语义是「删掉这条内容」，跟「关掉弹窗」完全不是一回事，不能靠猜 class 名字来区分。
+#
+# 所以现在：先定位弹窗容器，只在容器里找关闭按钮。
+# 遇到不在这个列表里的自定义弹窗，往 config.json 的 popup_guard.extra_popup_roots 里加，
+# 不要图省事打开全页面扫描。
+DEFAULT_POPUP_ROOTS = [
+    # Ant Design（MiniMax 用）
+    ".ant-modal-root",
+    ".ant-modal-wrap",
+    ".ant-modal",
+    ".ant-modal-confirm",
+    ".ant-drawer",
+    ".ant-drawer-content",
+    ".ant-image-preview-wrap",
+    ".ant-notification",
+    ".ant-message",
+    ".ant-popover",
+    # Arco Design（番茄音频创作平台用）
+    ".arco-modal-wrapper",
+    ".arco-modal",
+    ".arco-drawer",
+    ".arco-drawer-inner",
+    ".arco-popover",
+    ".arco-toast",
+    # 通用 / 无障碍语义（规范要求的写法，最可靠）
+    "[role='dialog']",
+    "[role='alertdialog']",
+    "[aria-modal='true']",
+]
+
+# ★ 危险元素黑名单：这些 × 的语义是「删掉这条内容」，永远不能点
+#
+# 这是独立于作用域的第二道防线：即使将来因为某种原因放宽了查找范围，
+# 这一层也会兜底拦住。判断方式是元素本身或其祖先命中下列任一选择器就跳过。
+DEFAULT_DANGEROUS_SELECTORS = [
+    # 下拉多选框里已选项的 ×
+    ".ant-select-selection-item-remove",
+    ".ant-select-clear",
+    ".arco-select-clear-icon",
+    ".arco-tag-close-btn",
+    # 标签的 ×
+    ".ant-tag-close-icon",
+    "[class*='tag-close']",
+    "[class*='tagClose']",
+    "[class*='tag__close']",
+    # 输入框的清空图标
+    ".ant-input-clear-icon",
+    ".arco-input-clear-btn",
+    "[class*='clear-icon']",
+    "[class*='clearIcon']",
+    ".ant-picker-clear",
+    # 列表项 / 卡片的删除按钮
+    "[class*='item-remove']",
+    "[class*='itemRemove']",
+    "[class*='remove-btn']",
+    "[class*='removeBtn']",
+    "[class*='delete-btn']",
+    "[class*='deleteBtn']",
+]
+
+# 整屏遮罩的排除项：这些面板摊开时也可能"盖满屏幕、内部恰好没有 button"，
+# 但它们正是用户要用的东西，删掉等于让人刚做的选择凭空消失。
+DEFAULT_MASK_KEEP_SELECTORS = [
+    ".ant-select-dropdown",
+    ".ant-cascader-dropdown",
+    ".ant-dropdown",
+    ".ant-picker-dropdown",
+    ".arco-select-dropdown",
+    ".arco-select-popup",
+    ".arco-dropdown",
+    ".arco-trigger",
+    "[class*='select-dropdown']",
+    "[class*='select-popup']",
+    "[class*='dropdown-menu']",
+    "[class*='dropdown-panel']",
+    "form",
+    ".ant-form",
+    ".arco-form",
+]
+
 # ---------------------------------------------------------------- 内部 JS
 
-# 第一遍：找图标类关闭按钮，给它们打标记，一次网络往返搞定（比逐个 locator 快得多）
-_JS_FIND_ICON = """
-(sels) => {
+# 公共片段：会被拼进下面每个函数的函数体里。
+# 为什么不放在页面全局？—— Playwright 对"多语句字符串"的函数识别不稳定，
+# 拼进函数体最省心，也保证每段 JS 自带依赖、可以单独跑。
+_JS_HELPERS = """
+  function __pgDangerous(el, blacklist) {
+    for (const b of blacklist) {
+      try {
+        if (el.matches(b)) return true;
+        if (el.closest(b)) return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+  function __pgScopes(roots, scanWhole) {
+    const scopes = [];
+    if (!scanWhole) {
+      for (const r of (roots || [])) {
+        try {
+          document.querySelectorAll(r).forEach(function (e) {
+            if (scopes.indexOf(e) < 0) scopes.push(e);
+          });
+        } catch (e) {}
+      }
+    } else {
+      scopes.push(document);
+    }
+    return scopes;
+  }
+"""
+
+# 第一遍：找图标类关闭按钮，打标记，一次网络往返搞定（比逐个 locator 快得多）
+#
+# 安全要点（顺序即优先级）：
+#   1. 只在弹窗容器里找（__pgScopes）—— 这是防止误删表单内容的关键
+#   2. 命中黑名单的直接跳过（__pgDangerous）—— 第二道防线
+#   3. 尺寸上限：关闭按钮都很小，整屏容器不可能是关闭按钮
+_JS_FIND_ICON = "(cfg) => {" + _JS_HELPERS + """
+  const sels = cfg.sels, black = cfg.blacklist || [];
+  const blockwords = cfg.blockwords || [];
+  const scopes = __pgScopes(cfg.roots, cfg.scanWhole);
   const found = [];
   const vw = window.innerWidth, vh = window.innerHeight;
-  for (const sel of sels) {
-    let nodes;
-    try { nodes = document.querySelectorAll(sel); } catch (e) { continue; }
-    for (const el of nodes) {
-      if (el.hasAttribute('data-pg-close')) continue;
-      let r, st;
-      try {
-        r = el.getBoundingClientRect();
-        st = getComputedStyle(el);
-      } catch (e) { continue; }
-      if (!r || r.width < 4 || r.height < 4) continue;
-      // 尺寸上限：关闭按钮都很小。像 [class*='-close'] 这类宽泛选择器
-      // 有可能命中整屏容器，点下去等于乱点，必须挡掉。
-      if (r.width > vw * 0.5 || r.height > vh * 0.5) continue;
-      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
-      if (parseFloat(st.opacity || '1') < 0.05) continue;
-      // 命中的可能是 svg 图标本身，往上找到真正能点的按钮
-      let target = el;
-      if (el.tagName !== 'BUTTON' && el.tagName !== 'A') {
-        const up = el.closest('button, a, [role="button"]');
-        if (up) target = up;
+
+  function __pgBlocked(el) {
+    if (!blockwords.length) return false;
+    const t = ((el.innerText || el.textContent) || '').trim();
+    if (!t) return false;
+    for (const w of blockwords) { if (t.indexOf(w) >= 0) return true; }
+    return false;
+  }
+
+  for (const scope of scopes) {
+    for (const sel of sels) {
+      let nodes;
+      try { nodes = scope.querySelectorAll(sel); } catch (e) { continue; }
+      for (const el of nodes) {
+        if (el.hasAttribute('data-pg-close')) continue;
+        if (__pgDangerous(el, black)) continue;
+        let r, st;
+        try {
+          r = el.getBoundingClientRect();
+          st = getComputedStyle(el);
+        } catch (e) { continue; }
+        if (!r || r.width < 4 || r.height < 4) continue;
+        if (r.width > vw * 0.5 || r.height > vh * 0.5) continue;
+        if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+        if (parseFloat(st.opacity || '1') < 0.05) continue;
+        // 命中的可能是 svg 图标本身，往上找到真正能点的按钮
+        let target = el;
+        if (el.tagName !== 'BUTTON' && el.tagName !== 'A') {
+          const up = el.closest('button, a, [role="button"]');
+          if (up) target = up;
+        }
+        if (target.hasAttribute('data-pg-close')) continue;
+        if (__pgDangerous(target, black)) continue;
+        // 文字检查：弹窗底部主按钮有可能是"确认删除"，不能闭眼点
+        if (__pgBlocked(target)) continue;
+        target.setAttribute('data-pg-close', '1');
+        found.push(sel);
       }
-      if (target.hasAttribute('data-pg-close')) continue;
-      target.setAttribute('data-pg-close', '1');
-      found.push(sel);
     }
   }
   return found;
 }
 """
 
-# 第二遍：找文字类按钮。先收精确匹配，没有再用"包含匹配"（且限短文本，避免误伤大按钮）
-_JS_FIND_TEXT = """
-(keys) => {
-  const exact = [], fuzzy = [];
+# 第二遍：找文字类按钮。
+#
+# 分三档，优先级从高到低：
+#   确认类（我知道了 / 确定 / 好的 …）→ 关闭类（取消 / 以后再说 …）
+# 每档内部再按「精确匹配 优先于 包含匹配」排序。
+#
+# 只在弹窗容器里找 —— 页面主区域的「取消」「关闭」往往是业务按钮，不能乱点。
+# 文字里含「删除 / 移除 / 清空」等词的一律跳过：那是"确认删除"按钮，点了就出事。
+_JS_FIND_TEXT = "(cfg) => {" + _JS_HELPERS + """
+  const confirmKeys = cfg.confirmKeys || [];
+  const dismissKeys = cfg.dismissKeys || [];
+  const blockwords = cfg.blockwords || [];
+  const black = cfg.blacklist || [];
+  const scopes = __pgScopes(cfg.roots, cfg.scanWhole);
   const vw = window.innerWidth, vh = window.innerHeight;
-  const nodes = document.querySelectorAll('button, a[role="button"], [role="button"], .ant-btn');
-  for (const el of nodes) {
-    if (el.hasAttribute('data-pg-text')) continue;
-    let r, st;
-    try {
-      r = el.getBoundingClientRect();
-      st = getComputedStyle(el);
-    } catch (e) { continue; }
-    if (!r || r.width < 8 || r.height < 8) continue;
-    // 同样加尺寸上限，避免"取消"这类常见词命中整屏容器或页面主按钮
-    if (r.width > vw * 0.5 || r.height > vh * 0.5) continue;
-    if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
-    const t = ((el.innerText || el.textContent) || '').trim();
-    if (!t) continue;
-    for (const k of keys) {
-      if (t === k) { exact.push([el, k]); break; }
-      if (t.length <= 10 && t.indexOf(k) >= 0) { fuzzy.push([el, k]); break; }
+  const cExact = [], cFuzzy = [], dExact = [], dFuzzy = [];
+
+  function __pgBlocked(t) {
+    for (const w of blockwords) { if (t.indexOf(w) >= 0) return true; }
+    return false;
+  }
+
+  for (const scope of scopes) {
+    let nodes;
+    try { nodes = scope.querySelectorAll('button, a[role="button"], [role="button"], .ant-btn'); }
+    catch (e) { continue; }
+    for (const el of nodes) {
+      if (el.hasAttribute('data-pg-confirm') || el.hasAttribute('data-pg-text')) continue;
+      if (__pgDangerous(el, black)) continue;
+      let r, st;
+      try {
+        r = el.getBoundingClientRect();
+        st = getComputedStyle(el);
+      } catch (e) { continue; }
+      if (!r || r.width < 8 || r.height < 8) continue;
+      if (r.width > vw * 0.5 || r.height > vh * 0.5) continue;
+      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+      const t = ((el.innerText || el.textContent) || '').trim();
+      if (!t) continue;
+      if (__pgBlocked(t)) continue;
+      let hit = false;
+      for (const k of confirmKeys) {
+        if (t === k) { cExact.push([el, k]); hit = true; break; }
+        if (t.length <= 12 && t.indexOf(k) >= 0) { cFuzzy.push([el, k]); hit = true; break; }
+      }
+      if (hit) continue;
+      for (const k of dismissKeys) {
+        if (t === k) { dExact.push([el, k]); hit = true; break; }
+        if (t.length <= 12 && t.indexOf(k) >= 0) { dFuzzy.push([el, k]); hit = true; break; }
+      }
     }
   }
-  const chosen = exact.length ? exact : fuzzy;
+
+  let chosen, attr;
+  if (cExact.length)      { chosen = cExact;  attr = 'data-pg-confirm'; }
+  else if (cFuzzy.length) { chosen = cFuzzy;  attr = 'data-pg-confirm'; }
+  else if (dExact.length) { chosen = dExact;  attr = 'data-pg-text'; }
+  else                    { chosen = dFuzzy;  attr = 'data-pg-text'; }
+
   const out = [];
   for (const [el, k] of chosen) {
-    el.setAttribute('data-pg-text', k);
-    out.push(k);
+    el.setAttribute(attr, k);
+    out.push(attr + ':' + k);
   }
   return out;
 }
 """
 
 # 兜底：删掉"盖满整屏、且内部没有任何可交互元素"的纯遮罩。
-# 真弹窗（里面有按钮/输入框）会被跳过，不会被误删。
-_JS_DROP_MASKS = """
-() => {
+# 真弹窗（里面有按钮/输入框）会被跳过，不会被误删；
+# 下拉面板、表单等"要用的东西"也在保留名单里，同样不动。
+_JS_DROP_MASKS = "(cfg) => {" + _JS_HELPERS + """
+  const keep = (cfg && cfg.keep) || [];
   const vw = window.innerWidth, vh = window.innerHeight;
   const removed = [];
   let els;
@@ -196,20 +427,22 @@ _JS_DROP_MASKS = """
     const z = parseInt(st.zIndex, 10);
     if (isNaN(z) || z < 100) continue;
     if (!r || r.width < vw * 0.6 || r.height < vh * 0.6) continue;
+    // 下拉面板 / 表单：这些是用户正在用的，删掉等于让人刚做的选择消失
+    if (__pgDangerous(el, keep)) continue;
     // 里面还有能点的东西 → 说明是真正的对话框，不动它
     if (el.querySelector('button, input, textarea, select, a, [role="button"]')) continue;
     removed.push((el.className || '').toString().slice(0, 50));
     try { el.remove(); } catch (e) {}
   }
   return removed;
-}
-"""
+}"""
 
 _JS_CLEANUP = """
 () => {
-  document.querySelectorAll('[data-pg-close],[data-pg-text]').forEach(e => {
+  document.querySelectorAll('[data-pg-close],[data-pg-text],[data-pg-confirm]').forEach(e => {
     e.removeAttribute('data-pg-close');
     e.removeAttribute('data-pg-text');
+    e.removeAttribute('data-pg-confirm');
   });
 }
 """
@@ -220,14 +453,26 @@ _JS_CLEANUP = """
 def load_guard_config(cfg):
     """从 config.json 里取弹窗守卫的配置，缺省值兜底"""
     g = (cfg or {}).get("popup_guard") or {}
+    extra_roots = list(g.get("extra_popup_roots") or [])
     return {
         "enabled": bool(g.get("enabled", True)),
+        # 图标类：只在下面的容器里找
         "close_selectors": list(g.get("close_selectors") or DEFAULT_CLOSE_SELECTORS),
+        "popup_roots": list(g.get("popup_roots") or DEFAULT_POPUP_ROOTS) + extra_roots,
+        "dangerous_selectors": list(g.get("dangerous_selectors") or DEFAULT_DANGEROUS_SELECTORS),
+        # 文字类：确认类优先于关闭类
+        "confirm_selectors": list(g.get("confirm_selectors") or DEFAULT_CONFIRM_SELECTORS),
         "dismiss_text_selectors": list(g.get("dismiss_text_selectors") or DEFAULT_TEXT_SELECTORS),
+        "text_blockwords": list(g.get("text_blockwords") or DEFAULT_TEXT_BLOCKWORDS),
+        "confirm_button_selectors": list(g.get("confirm_button_selectors") or DEFAULT_CONFIRM_BUTTONS),
         "allow_text_buttons": bool(g.get("allow_text_buttons", True)),
+        # 默认不扫描整个页面 —— 全页面扫 × 图标会把表单里已填的标签删掉
+        "scan_whole_page": bool(g.get("scan_whole_page", False)),
         "max_rounds": max(1, int(g.get("max_rounds", 3))),
         "press_escape": bool(g.get("press_escape", True)),
-        "force_remove_blocking_mask": bool(g.get("force_remove_blocking_mask", True)),
+        # 默认关闭：删遮罩是绕过页面逻辑的粗暴手段，只在确实没别的办法时手动开
+        "force_remove_blocking_mask": bool(g.get("force_remove_blocking_mask", False)),
+        "mask_keep_selectors": list(g.get("mask_keep_selectors") or DEFAULT_MASK_KEEP_SELECTORS),
         "dismiss_after_goto_ms": int(g.get("dismiss_after_goto_ms", 1500)),
     }
 
@@ -300,20 +545,28 @@ def _click_tagged(page, attr, limit, log, kind):
         except Exception:
             pass
         try:
-            el.evaluate("e => { e.removeAttribute('data-pg-close'); e.removeAttribute('data-pg-text'); }")
+            el.evaluate("e => { e.removeAttribute('data-pg-close'); e.removeAttribute('data-pg-text'); e.removeAttribute('data-pg-confirm'); }")
         except Exception:
             pass
     return closed
 
 
-def _drop_masks(page, log):
+def _drop_masks(page, cfg, log):
+    """（默认不启用）删掉挡路的整屏纯遮罩。
+
+    这是绕过页面自身逻辑的粗暴手段，只在实在没别的办法时手动开启
+    （config.json → popup_guard.force_remove_blocking_mask = true）。
+    """
+    g = load_guard_config(cfg)
     try:
-        removed = page.evaluate(_JS_DROP_MASKS)
+        removed = page.evaluate(_JS_DROP_MASKS, {
+            "keep": g["mask_keep_selectors"],
+        })
     except Exception:
         return 0
     if removed and log:
         names = [r for r in removed if r][:2]
-        log(f"  ✓ 已移除 {len(removed)} 层整屏遮罩{f'（{names}）' if names else ''}")
+        log(f"  ⚠ 已移除 {len(removed)} 层整屏遮罩{f'（{names}）' if names else ''}（兜底手段，默认不启用）")
     return len(removed or [])
 
 
@@ -332,20 +585,51 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
         for rnd in range(g["max_rounds"]):
             round_hit = 0
 
-            # ① 图标类关闭按钮（× 等）—— 最直接，优先试
+            # ① 图标类关闭按钮（× 等）—— 只在弹窗容器内找，最直接
             try:
-                page.evaluate(_JS_FIND_ICON, g["close_selectors"])
+                page.evaluate(_JS_FIND_ICON, {
+                    "sels": g["close_selectors"],
+                    "roots": g["popup_roots"],
+                    "blacklist": g["dangerous_selectors"],
+                    "blockwords": g["text_blockwords"],
+                    "scanWhole": g["scan_whole_page"],
+                })
             except Exception:
                 pass
             round_hit += _click_tagged(page, "data-pg-close", 6, log, "关闭按钮")
 
-            # ② 文字类按钮（"我知道了"/"取消"等），只在没点到图标按钮时才试
-            if round_hit == 0 and g["allow_text_buttons"]:
+            # ② 弹窗底部的主按钮 —— 语义上就是"确认"（番茄的裁剪弹窗就是这种）
+            if round_hit == 0:
                 try:
-                    page.evaluate(_JS_FIND_TEXT, g["dismiss_text_selectors"])
+                    page.evaluate(_JS_FIND_ICON, {
+                        "sels": g["confirm_button_selectors"],
+                        "roots": g["popup_roots"],
+                        "blacklist": g["dangerous_selectors"],
+                        "blockwords": g["text_blockwords"],
+                        "scanWhole": g["scan_whole_page"],
+                    })
                 except Exception:
                     pass
-                round_hit += _click_tagged(page, "data-pg-text", 2, log, "文字按钮")
+                round_hit += _click_tagged(page, "data-pg-close", 2, log, "确认按钮")
+
+            # ② 文字类按钮：★ 确认类优先 ★（我知道了 / 确定 / 好的 …）
+            #    点确认走的是页面自己的关闭流程，弹窗会自己关掉，页面状态也保持一致。
+            #    确认类找不到才退而求其次点「取消 / 以后再说」这类关闭按钮。
+            if round_hit == 0 and g["allow_text_buttons"]:
+                try:
+                    page.evaluate(_JS_FIND_TEXT, {
+                        "confirmKeys": g["confirm_selectors"],
+                        "dismissKeys": g["dismiss_text_selectors"],
+                        "blockwords": g["text_blockwords"],
+                        "roots": g["popup_roots"],
+                        "blacklist": g["dangerous_selectors"],
+                        "scanWhole": g["scan_whole_page"],
+                    })
+                except Exception:
+                    pass
+                round_hit += _click_tagged(page, "data-pg-confirm", 2, log, "确认按钮")
+                if round_hit == 0:
+                    round_hit += _click_tagged(page, "data-pg-text", 2, log, "关闭按钮")
 
             # ③ Esc 键：有些引导层吃这一套，成本为零
             if round_hit == 0 and g["press_escape"] and rnd == 0:
@@ -355,13 +639,12 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                 except Exception:
                     pass
 
-            # ④ 关键：整屏遮罩会挡住【所有】点击 —— 包括关闭按钮自己。
-            #    所以点不动时，必须先把这种"纯遮罩"铲掉，再回到下一轮重新点按钮。
-            #    这一条放在每一轮的末尾（而不是某一次性的兜底），否则第一轮
-            #    就会因为"按钮被遮罩挡住点不动"而空手而归，后面全部作废。
-            #    只删内部没有任何可交互元素的遮罩，真正的对话框会被跳过、不会误删。
-            if round_hit == 0 and g["force_remove_blocking_mask"]:
-                round_hit += _drop_masks(page, log)
+            # ④ 最后手段：删掉挡路的整屏遮罩，再回到下一轮重新点按钮。
+            #    ★ 默认关闭 ★ —— 删遮罩是绕过页面逻辑的粗暴手段，可能连带干掉
+            #    需要人看一眼的重要弹窗（额度提醒、验证提示、授权确认）。
+            #    只有确认「弹窗纯属干扰、且确实点不动」时才手动开启。
+            if round_hit == 0 and (g["force_remove_blocking_mask"] or force_mask):
+                round_hit += _drop_masks(page, cfg, log)
 
             try:
                 page.evaluate(_JS_CLEANUP)
@@ -495,7 +778,7 @@ async def _a_click_tagged(page, attr, limit, log, kind):
         except Exception:
             pass
         try:
-            await el.evaluate("e => { e.removeAttribute('data-pg-close'); e.removeAttribute('data-pg-text'); }")
+            await el.evaluate("e => { e.removeAttribute('data-pg-close'); e.removeAttribute('data-pg-text'); e.removeAttribute('data-pg-confirm'); }")
         except Exception:
             pass
     return closed
@@ -514,17 +797,47 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
             round_hit = 0
 
             try:
-                await page.evaluate(_JS_FIND_ICON, g["close_selectors"])
+                await page.evaluate(_JS_FIND_ICON, {
+                    "sels": g["close_selectors"],
+                    "roots": g["popup_roots"],
+                    "blacklist": g["dangerous_selectors"],
+                    "blockwords": g["text_blockwords"],
+                    "scanWhole": g["scan_whole_page"],
+                })
             except Exception:
                 pass
             round_hit += await _a_click_tagged(page, "data-pg-close", 6, log, "关闭按钮")
 
-            if round_hit == 0 and g["allow_text_buttons"]:
+            # 弹窗底部的主按钮 —— 语义上就是"确认"（番茄的裁剪弹窗就是这种）
+            if round_hit == 0:
                 try:
-                    await page.evaluate(_JS_FIND_TEXT, g["dismiss_text_selectors"])
+                    await page.evaluate(_JS_FIND_ICON, {
+                        "sels": g["confirm_button_selectors"],
+                        "roots": g["popup_roots"],
+                        "blacklist": g["dangerous_selectors"],
+                        "blockwords": g["text_blockwords"],
+                        "scanWhole": g["scan_whole_page"],
+                    })
                 except Exception:
                     pass
-                round_hit += await _a_click_tagged(page, "data-pg-text", 2, log, "文字按钮")
+                round_hit += await _a_click_tagged(page, "data-pg-close", 2, log, "确认按钮")
+
+            # ★ 确认类按钮优先 ★：点确认走页面自己的关闭流程，比删遮罩安全
+            if round_hit == 0 and g["allow_text_buttons"]:
+                try:
+                    await page.evaluate(_JS_FIND_TEXT, {
+                        "confirmKeys": g["confirm_selectors"],
+                        "dismissKeys": g["dismiss_text_selectors"],
+                        "blockwords": g["text_blockwords"],
+                        "roots": g["popup_roots"],
+                        "blacklist": g["dangerous_selectors"],
+                        "scanWhole": g["scan_whole_page"],
+                    })
+                except Exception:
+                    pass
+                round_hit += await _a_click_tagged(page, "data-pg-confirm", 2, log, "确认按钮")
+                if round_hit == 0:
+                    round_hit += await _a_click_tagged(page, "data-pg-text", 2, log, "关闭按钮")
 
             if round_hit == 0 and g["press_escape"] and rnd == 0:
                 try:
@@ -533,13 +846,16 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
                 except Exception:
                     pass
 
-            # 与同步版一致：遮罩会挡住关闭按钮自己，必须纳入每轮的升级链
-            if round_hit == 0 and g["force_remove_blocking_mask"]:
+            # 最后手段（★ 默认关闭 ★）：删遮罩是绕过页面逻辑的粗暴手段，
+            # 可能连带干掉需要人看一眼的重要弹窗，只在确实没别的办法时手动开启。
+            if round_hit == 0 and (g["force_remove_blocking_mask"] or force_mask):
                 try:
-                    removed = await page.evaluate(_JS_DROP_MASKS)
+                    removed = await page.evaluate(_JS_DROP_MASKS, {
+                        "keep": g["mask_keep_selectors"],
+                    })
                     if removed and log:
                         names = [r for r in removed if r][:2]
-                        log(f"  ✓ 已移除 {len(removed)} 层整屏遮罩{f'（{names}）' if names else ''}")
+                        log(f"  ⚠ 已移除 {len(removed)} 层整屏遮罩{f'（{names}）' if names else ''}（兜底手段，默认不启用）")
                     round_hit += len(removed or [])
                 except Exception:
                     pass

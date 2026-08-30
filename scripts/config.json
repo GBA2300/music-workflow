@@ -30,15 +30,22 @@
     "auto_generate": true
   },
 
-  "_popup_guard说明": "弹窗守卫：网站会不定时弹浮层（活动公告/新功能引导/会员推广/额度提醒），盖住按钮后就点不动了，流程直接断在这一步。守卫会自动关掉它们：先点 × 关闭按钮，点不到再点「我知道了」这类文字按钮，都点不到就铲掉挡路的整屏遮罩再重试。原生 alert 弹窗也会被记录到日志（便于排查），但 Playwright 本身会自动关闭它，通常不会卡住。绝大多数情况保持下面缺省值即可；万一遇到关不掉的弹窗，把它的选择器加进 close_selectors 最前面。",
+  "_popup_guard说明": "弹窗守卫：网站会不定时弹浮层（活动公告/新功能引导/会员推广/额度提醒），盖住按钮后就点不动了，流程直接断在这一步。守卫会自动关掉它们，策略是先礼后兵：① 点弹窗里的 × ② 点「我知道了/确定」这类确认按钮（★首选，走页面自己的关闭流程，弹窗会自己关掉）③ 点「取消/以后再说」④ 按 Esc。另有一个「删掉挡路遮罩」的兜底手段，但**默认关闭**——它是绕过页面逻辑的粗暴做法，可能连带干掉需要人看一眼的重要弹窗（额度提醒、验证提示、授权确认）。安全红线：关闭按钮只在可识别的弹窗容器里找，绝不扫描整个页面——表单里「歌手名/词作者」这类标签旁边也有 ×，那是删除内容用的，点掉就出事。遇到自定义弹窗请加进 extra_popup_roots，不要打开 scan_whole_page。",
   "popup_guard": {
     "enabled": true,
     "close_selectors": [],
+    "confirm_selectors": [],
     "dismiss_text_selectors": [],
+    "text_blockwords": [],
+    "popup_roots": [],
+    "extra_popup_roots": [],
+    "dangerous_selectors": [],
     "allow_text_buttons": true,
+    "scan_whole_page": false,
     "max_rounds": 3,
     "press_escape": true,
-    "force_remove_blocking_mask": true,
+    "force_remove_blocking_mask": false,
+    "mask_keep_selectors": [],
     "dismiss_after_goto_ms": 1500
   },
 
