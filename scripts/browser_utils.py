@@ -17,6 +17,56 @@ import subprocess
 PROCESS_NAMES = ["chrome", "chrome.exe", "chromium", "chromium.exe",
                  "Google Chrome", "msedge", "msedge.exe"]
 
+# 反自动化 + 常规参数（各脚本统一从这里取，别各自复制）
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-infobars",
+    "--lang=zh-CN",
+]
+
+
+def window_args(headless=False):
+    """统一的浏览器窗口参数，返回 args 列表。
+
+    有头模式：加 --start-maximized（最大化窗口）。
+    配合 viewport_for() 的 viewport=None，页面就会**跟随窗口大小自适应**——
+    不同分辨率、不同 DPI 缩放的设备打开后布局都完整，不会出现
+    "固定 1440×900 视口在小屏上溢出、底部按钮被挤出屏幕点不到"的问题。
+
+    headless 模式没有窗口，不传 --start-maximized。
+    """
+    args = list(STEALTH_ARGS)
+    if not headless:
+        args.append("--start-maximized")
+    return args
+
+
+def viewport_for(headless=False, fallback=(1440, 900)):
+    """launch_persistent_context 的 viewport 参数。
+
+    有头模式返回 None —— 不固定视口，页面按最大化窗口的实际尺寸渲染（自适应）。
+    headless 模式没有窗口，必须给一个固定视口兜底。
+    """
+    if headless:
+        return {"width": fallback[0], "height": fallback[1]}
+    return None
+
+
+def scroll_into_view(page, locator, timeout=1500):
+    """把元素滚到可视区域内（防"底部按钮在视口外点不到"）。
+
+    页面自适应窗口后，长页面底部的内容可能还在视口外，
+    点击前先滚一下；滚不动（比如被 fixed 层盖住）也不抛异常，
+    由调用方继续处理。
+    """
+    try:
+        locator.scroll_into_view_if_needed(timeout=timeout)
+        return True
+    except Exception:
+        return False
+
 
 def kill_browsers(verbose=False):
     """关掉残留的 Chromium/Chrome/Edge 进程。返回是否执行成功（失败也不抛异常）。"""

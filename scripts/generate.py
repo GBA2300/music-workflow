@@ -40,6 +40,7 @@ from popup_guard import (  # noqa: E402
     dismiss_popups,
     goto_with_guard,
 )
+from browser_utils import window_args, viewport_for  # noqa: E402
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -131,6 +132,11 @@ def try_click(page, selectors, timeout=2500, cfg=None):
         try:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=timeout)
+            # 窗口自适应后页面可能很高，先滚到元素可见再点（防底部按钮在视口外）
+            try:
+                loc.scroll_into_view_if_needed(timeout=1500)
+            except Exception:
+                pass
             loc.click(timeout=timeout)
             return sel
         except Exception:
@@ -143,6 +149,10 @@ def try_click(page, selectors, timeout=2500, cfg=None):
             try:
                 loc = page.locator(sel).first
                 loc.wait_for(state="visible", timeout=timeout)
+                try:
+                    loc.scroll_into_view_if_needed(timeout=1500)
+                except Exception:
+                    pass
                 loc.click(timeout=timeout)
                 return sel
             except Exception:
@@ -155,6 +165,10 @@ def try_set_contenteditable(page, sel, text, timeout=3000):
     try:
         loc = page.locator(sel).first
         loc.wait_for(state="visible", timeout=timeout)
+        try:
+            loc.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
         loc.click(timeout=timeout)
         loc.evaluate("el => { el.innerText = ''; }")
         page.keyboard.insert_text(text)
@@ -168,6 +182,10 @@ def try_fill(page, selectors, text, timeout=2500):
         try:
             loc = page.locator(sel).first
             loc.wait_for(state="visible", timeout=timeout)
+            try:
+                loc.scroll_into_view_if_needed(timeout=1500)
+            except Exception:
+                pass
             tag = loc.evaluate("el => el.tagName")
             if tag == "DIV":
                 # contenteditable div：用剪贴板更稳
@@ -500,11 +518,15 @@ def main():
             return
 
     with sync_playwright() as p:
+        is_headless = args.headless or cfg.get("headless", False)
         ctx = p.chromium.launch_persistent_context(
             user_data_dir=str(profile),
-            headless=args.headless or cfg.get("headless", False),
-            args=["--disable-blink-features=AutomationControlled"],
-            viewport={"width": 1440, "height": 900},
+            headless=is_headless,
+            # ★ 窗口自适应设备：有头模式最大化 + 不固定视口，页面跟随窗口大小。
+            #   之前固定 1440×900，在小屏笔记本上页面渲染不全、底部按钮被挤出屏幕，
+            #   换设备/换分辨率就点不到。现在任何设备打开都是完整的。
+            args=window_args(is_headless),
+            viewport=viewport_for(is_headless),
             accept_downloads=True,
             slow_mo=200,
         )

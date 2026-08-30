@@ -144,6 +144,7 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | 想只发某几首 | `python fanqie_upload.py --songs 歌名-01,歌名-02` |
 | 想重发已发过的 | 删掉 `published.json` 里对应记录 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
+| **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
 
 <details>
 <summary><b>关于弹窗：脚本是怎么自动处理的</b></summary>

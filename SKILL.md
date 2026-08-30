@@ -270,6 +270,12 @@ cd <工作目录>
 - **「找不到生成按钮」**：MiniMax 的生成按钮文字是**「限时免费」**（底部紫色大按钮，前面有个图标）。
   `config.json` 的 `selectors.generate_button` **必须保留** `button:has-text('限时免费')` 且放在第一位。
   不确定按钮长什么样时，跑 `python inspect_buttons.py` 列出页面所有按钮的文字/class/位置，照着改配置。
+- **「页面没铺满屏幕 / 底部按钮点不到」**：早期版本把浏览器视口**固定**成 1440×900，
+  屏幕比它小（比如 1280×720 的笔记本）时页面渲染不全，底部按钮被挤出屏幕。
+  现在所有脚本统一改为：**有头模式最大化窗口 + 不固定视口**（`--start-maximized` +
+  `viewport=None`），页面跟随窗口大小自适应，任何分辨率/DPI 的设备都完整。
+  点击前还会自动滚动到元素可见。**改代码时请沿用 `browser_utils.py` 里的
+  `window_args()` / `viewport_for()`，不要再手写固定 viewport。**
 - **「已点生成，但一直等不到歌 / 超时」**：这是最常见的坑，原因和解法：
   1. MiniMax **生成完成后不会刷新页面上的历史列表**，音频链接只在
      `https://www.minimaxi.com/v1/api/music/history_list` 接口里返回。

@@ -638,6 +638,12 @@ async def step1_next(page, n_songs, audio_names):
     done = False
     # 用户实测：点「下一步」会弹出「确认上传」弹窗，点掉就进入第二步。
     # 偶尔首点无反应，需点两下；但弹窗出现后就不要再点下一步（会点到弹窗背景）。
+    # 「下一步」在页面底部：窗口自适应后页面可能很高，先滚到按钮可见再点。
+    try:
+        await loc.scroll_into_view_if_needed(timeout=3000)
+        await asyncio.sleep(0.4)
+    except Exception:
+        pass
     for attempt in range(4):
         # 先处理可能已弹出的确认窗
         if await click_confirm():
@@ -872,7 +878,8 @@ async def main():
         log("登录成功、看到上传页「添加歌曲」后，脚本自动退出并保存登录态。")
         async with async_playwright() as p:
             ctx = await p.chromium.launch_persistent_context(
-                str(PROFILE), headless=False, args=["--start-maximized"])
+                str(PROFILE), headless=False, args=["--start-maximized"],
+                viewport=None)   # 页面跟随窗口大小，不同设备自适应
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await a_guard_context(ctx, log=log)
             await a_goto_with_guard(page, UPLOAD_URL, log=log, settle_sec=2)
@@ -908,7 +915,8 @@ async def main():
 
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
-            PROFILE, headless=False, args=["--start-maximized"]
+            PROFILE, headless=False, args=["--start-maximized"],
+            viewport=None   # 页面跟随窗口大小，不同设备自适应（不固定视口）
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(20000)
