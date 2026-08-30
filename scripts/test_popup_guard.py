@@ -37,6 +37,7 @@ from popup_guard import (                                  # noqa: E402
     guard_page, dismiss_popups, click_with_guard, goto_with_guard,
     a_guard_page, a_dismiss_popups, a_click_with_guard, a_goto_with_guard,
 )
+from generate import set_generate_quantity                  # noqa: E402
 
 # ---------------------------------------------------------------- 假页面
 
@@ -212,6 +213,15 @@ HTML_REAL2 = _page("""
 .close-x{position:absolute;right:14px;top:14px;width:24px;height:24px;border:none;background:#eee;cursor:pointer}
 """)
 
+# ⑪ 生成数量控件（MiniMax stepper 常见结构：可编辑 input + 加减按钮）
+HTML_QTY = _page("""
+<div class="stepper">
+  <button class="stepper-minus" onclick="q1.value=Math.max(1,Number(q1.value)-1)">-</button>
+  <input id="q1" type="number" value="2" min="1" max="10">
+  <button class="stepper-plus" onclick="q1.value=Number(q1.value)+1">+</button>
+</div>
+""")
+
 # 带 alert 的版本
 HTML_ALERT = HTML_MAIN.replace(
     "window.__alertFired=0;",
@@ -254,6 +264,7 @@ def run_tests():
     url_corner = _write(tmp, "corner.html", HTML_CORNER)
     url_real = _write(tmp, "real.html", HTML_REAL)
     url_real2 = _write(tmp, "real2.html", HTML_REAL2)
+    url_qty = _write(tmp, "qty.html", HTML_QTY)
     url_alert = _write(tmp, "alert.html", HTML_ALERT)
 
     with sync_playwright() as p:
@@ -474,6 +485,31 @@ def run_tests():
         check("aria-label='close' 能被选择器直接命中", c1 == 1,
               f"关闭={c1}，处理={n} 处，日志={logs15[0].strip() if logs15 else '无'}")
         pg15.close()
+
+        # ── 16. 生成数量设置（MiniMax 默认 2 → 改为 1）
+        print("\n【测试 16】★ 生成数量 —— 页面默认 2 改成 1")
+        pg16 = browser.new_page()
+        pg16.set_default_timeout(6000)
+        pg16.goto(url_qty)
+        pg16.wait_for_timeout(400)
+        logs16 = []
+        # ① 直接填值路径：2 → 1
+        ok1 = set_generate_quantity(pg16, {"selectors": {}}, 1, log=logs16.append)
+        v1 = pg16.evaluate("document.getElementById('q1').value")
+        check("直接填值：数量 2 → 1", ok1 and v1 == "1", f"返回={ok1}，页面={v1}")
+        # ② 只读 stepper 的点减号路径：3 → 1
+        pg16.evaluate("q1.readOnly=true; q1.value=3")
+        logs16.clear()
+        ok2 = set_generate_quantity(pg16, {"selectors": {}}, 1, log=logs16.append)
+        v2 = pg16.evaluate("document.getElementById('q1').value")
+        check("点减号路径：只读控件 3 → 1", ok2 and v2 == "1", f"返回={ok2}，页面={v2}")
+        # ③ 已是目标值：直接通过
+        pg16.evaluate("q1.readOnly=false; q1.value=1")
+        logs16.clear()
+        ok3 = set_generate_quantity(pg16, {"selectors": {}}, 1, log=logs16.append)
+        v3 = pg16.evaluate("document.getElementById('q1').value")
+        check("已是目标值：保持 1 不动", ok3 and v3 == "1", f"返回={ok3}，页面={v3}")
+        pg16.close()
 
         # ── 9. 番茄/Arco 风格弹窗（footer 主按钮）
         print("\n【测试 9】番茄/Arco 风格 —— footer 主按钮就是确认")

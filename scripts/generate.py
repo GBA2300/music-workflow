@@ -200,6 +200,131 @@ def try_fill(page, selectors, text, timeout=2500):
     return None
 
 
+# MiniMax 页面数量控件的默认选择器（config.json 的 selectors.quantity 可覆盖/扩展）
+_DEFAULT_QTY_INPUT_SELS = [
+    "input[type='number']",
+    "input[aria-label*='数量']",
+    "input[aria-label*='生成']",
+    "input[placeholder*='数量']",
+    "[class*='quantity'] input",
+    "[class*='count'] input",
+    "[class*='stepper'] input",
+    "[class*='num-input']",
+    "[class*='number-input']",
+]
+_DEFAULT_QTY_MINUS_SELS = [
+    "button[aria-label*='减']",
+    "button[aria-label*='减少']",
+    "[aria-label*='decrease']",
+    "[class*='minus']",
+    "[class*='decrease']",
+    "[class*='stepper-minus']",
+    "[class*='sub-btn']",
+]
+_DEFAULT_QTY_PLUS_SELS = [
+    "button[aria-label*='加']",
+    "button[aria-label*='增加']",
+    "[aria-label*='increase']",
+    "[class*='plus']",
+    "[class*='increase']",
+    "[class*='stepper-plus']",
+    "[class*='add-btn']",
+]
+
+
+def set_generate_quantity(page, cfg, want, log=None):
+    """把 MiniMax 页面上的「生成数量」控件改成 want（默认 1）。
+
+    背景：MiniMax 页面默认生成数量是 2（点一次生成出两首歌），脚本要按
+    quantity_per_round 来控制，必须先把页面数量改过来，否则额度会浪费。
+
+    策略（从快到稳）：
+      1. 直接往数量输入框填值（能填就最省事）
+      2. 填不了就点「减/加」按钮，从当前值一步步走到 want
+    找不到控件就返回 False（不阻塞流程，按页面实际数量继续，日志里会提示）。
+    """
+    q = (cfg.get("selectors") or {}).get("quantity") or {}
+    num_sels = list(q.get("input") or _DEFAULT_QTY_INPUT_SELS)
+    minus_sels = list(q.get("minus") or _DEFAULT_QTY_MINUS_SELS)
+    plus_sels = list(q.get("plus") or _DEFAULT_QTY_PLUS_SELS)
+
+    # ① 找到数量输入框（可能是 input，也可能是只读的 span/div 显示数字）
+    num_loc = None
+    for s in num_sels:
+        try:
+            loc = page.locator(s).first
+            loc.wait_for(state="visible", timeout=1500)
+            num_loc = loc
+            break
+        except Exception:
+            continue
+    if num_loc is None:
+        if log:
+            log("  ⚠ 找不到生成数量控件，按页面默认数量执行（可能多生成）")
+        return False
+
+    def _read_val():
+        try:
+            v = str(num_loc.input_value()).strip()
+        except Exception:
+            v = ""
+        if v:
+            try:
+                return int(v)
+            except Exception:
+                pass
+        try:
+            return int((num_loc.inner_text() or "").strip())
+        except Exception:
+            return -1
+
+    # ① 先试直接填值
+    try:
+        tag = num_loc.evaluate("el => el.tagName")
+        if tag in ("INPUT", "TEXTAREA"):
+            num_loc.fill(str(want), timeout=1500)
+            time.sleep(0.3)
+            if _read_val() == want:
+                if log:
+                    log(f"  ✓ 生成数量已设为 {want}")
+                return True
+    except Exception:
+        pass
+
+    # ② 填不了（只读 stepper）→ 点加减按钮从当前值走到 want
+    cur = _read_val()
+    if cur >= 0 and cur != want:
+        step_sels = minus_sels if cur > want else plus_sels
+        for _ in range(abs(cur - want)):
+            clicked = False
+            for s in step_sels:
+                try:
+                    btn = page.locator(s).first
+                    btn.wait_for(state="visible", timeout=1000)
+                    btn.click(timeout=1000)
+                    clicked = True
+                    time.sleep(0.35)
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                break
+        final = _read_val()
+        if final == want:
+            if log:
+                log(f"  ✓ 生成数量已设为 {want}（原 {cur}）")
+            return True
+        if log:
+            log(f"  ⚠ 生成数量未设成 {want}（当前 {final}），按页面实际数量继续")
+        return False
+
+    if cur == want:
+        return True
+    if log:
+        log("  ⚠ 数量控件读不出当前值，跳过数量设置")
+    return False
+
+
 def looks_like_audio_url(s):
     if not isinstance(s, str):
         return False
@@ -401,6 +526,9 @@ def do_one_task(page, context, cfg, task, sniffer):
         sniffer.reset()
         # 先记下已有的作品 id，稍后用「新出现的 id」判断这首歌生成好了
         known_ids = {m.get("music_id") for m in fetch_history(page, cfg)}
+        # ★ 把页面上的生成数量改成"这轮要几首"（默认 1）
+        #   MiniMax 页面默认数量是 2，不设置的话点一次生成会出两首，浪费额度
+        set_generate_quantity(page, cfg, need, log)
         # 生成按钮是整条流水线的咽喉：点不中这首歌就彻底没了，所以点之前再清一次弹窗
         dismiss_popups(page, cfg=cfg, log=log)
         hit = try_click(page, sel["generate_button"], cfg=cfg, timeout=5000)

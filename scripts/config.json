@@ -9,7 +9,8 @@
 
   "headless": false,
   "model": "Music-3.0",
-  "quantity_per_round": 2,
+  "_quantity说明": "每轮点一次生成要出几首歌。MiniMax 页面默认 2，脚本会在点生成前把页面上的数量控件改成本值（默认 1，点一次出一首，不浪费额度）。",
+  "quantity_per_round": 1,
   "is_instrumental": false,
 
   "wait_timeout_sec": 900,
@@ -67,6 +68,38 @@
     "lyrics_input": [
       "div[contenteditable='true']"
     ],
+    "_quantity说明": "生成数量控件的选择器。MiniMax 默认数量是 2，脚本在点生成前会把数量改成本轮要生成的数字（默认 1）。如果页面改版后数量没被改过来，把新的选择器加到这里最前面。",
+    "quantity": {
+      "input": [
+        "input[type='number']",
+        "input[aria-label*='数量']",
+        "input[aria-label*='生成']",
+        "input[placeholder*='数量']",
+        "[class*='quantity'] input",
+        "[class*='count'] input",
+        "[class*='stepper'] input",
+        "[class*='num-input']",
+        "[class*='number-input']"
+      ],
+      "minus": [
+        "button[aria-label*='减']",
+        "button[aria-label*='减少']",
+        "[aria-label*='decrease']",
+        "[class*='minus']",
+        "[class*='decrease']",
+        "[class*='stepper-minus']",
+        "[class*='sub-btn']"
+      ],
+      "plus": [
+        "button[aria-label*='加']",
+        "button[aria-label*='增加']",
+        "[aria-label*='increase']",
+        "[class*='plus']",
+        "[class*='increase']",
+        "[class*='stepper-plus']",
+        "[class*='add-btn']"
+      ]
+    },
     "instrumental_toggle": [
       "button.ant-switch.custom-switch"
     ],
