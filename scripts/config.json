@@ -1,0 +1,57 @@
+{
+  "_说明": "这是配置文件。绝大多数情况你只需要改 base_url / model / quantity_per_round / headless 四项。",
+
+  "base_url": "https://www.minimaxi.com/audio/music",
+  "profile_dir": "profile",
+  "library_dir": "library",
+  "tasks_file": "tasks.csv",
+  "lyrics_dir": "lyrics",
+
+  "headless": false,
+  "model": "Music-3.0",
+  "quantity_per_round": 2,
+  "is_instrumental": false,
+
+  "wait_timeout_sec": 420,
+  "poll_interval_sec": 4,
+  "retry_times": 2,
+  "pause_between_tasks_sec": 3,
+
+  "download": {
+    "audio_ext_whitelist": [".mp3", ".wav", ".flac", ".m4a", ".ogg"],
+    "min_audio_bytes": 200000
+  },
+
+  "_cover说明": "生成歌曲的同时自动生成封面。番茄音乐要求：PNG 格式、≥1440×1440、≤10MB。配色会根据「风格描述」里的关键词自动选（沧桑→紫、校园→琥珀、EDM→品红、古风→金、治愈→青、摇滚→橙红…）。想用自己的图，把图片放进 lyrics/../library/<歌名>/cover_source.jpg 再跑 export.py 即可。",
+  "cover": {
+    "format": "png",
+    "size": 1440,
+    "max_mb": 10,
+    "auto_generate": true
+  },
+
+  "_selectors说明": "每一项都是一个候选列表，脚本从上往下依次尝试，第一个能找到的就用。页面改版后把新的选择器加在最前面即可，不用改代码。这些是 2026-08 实测的。",
+  "selectors": {
+    "model_picker": [
+      "input#rc_select_0"
+    ],
+    "title_input": [
+      "input#music-title-input"
+    ],
+    "prompt_input": [
+      "textarea#music-styles-input"
+    ],
+    "lyrics_input": [
+      "div[contenteditable='true']"
+    ],
+    "instrumental_toggle": [
+      "button.ant-switch.custom-switch"
+    ],
+    "generate_button": [
+      "button:has-text('限时免费')",
+      "button:has-text('一键音乐')",
+      "button:has-text('生成音乐')",
+      "button:has-text('立即生成')"
+    ]
+  }
+}

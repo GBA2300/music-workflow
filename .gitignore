@@ -1,0 +1,40 @@
+# ============================================================
+# ⚠️ 登录态 / 个人数据 —— 绝对不要提交到公开仓库
+#    这些目录含你的 Cookie、登录凭证，提交 = 把账号交给别人
+# ============================================================
+profile/
+profile_fanqie/
+**/profile/
+**/profile_fanqie/
+storage_state*.json
+published.json
+
+# 个人作品与创作内容
+library/
+lyrics/
+
+# ============================================================
+# 运行产物
+# ============================================================
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 日志、截图、探针记录
+*.log
+_fanqie_log.txt
+_probe_records.json
+probe_report.json
+_fanqie_*.png
+_login_shot.png
+_probe_shot*.png
+_probe_shots/
+_fanqie_card*.png
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
