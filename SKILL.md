@@ -255,6 +255,18 @@ cd <工作目录>
 
 ### MiniMax 侧
 
+- **「找不到歌词输入框 / 找不到生成按钮」但元素明明存在**：
+  多半是 **MiniMax 活动弹窗（如「Music 3.0 创作者内测」）** 全屏挡住。该弹窗用 `<section class="...z-[1050]...">` 做整屏遮罩，
+  关闭按钮是 `button[aria-label='close']`。**先不要改输入框/按钮选择器**——把弹窗容器加进
+  `config.json → popup_guard.extra_popup_roots`：
+  ```json
+  "extra_popup_roots": [
+    "section.responsive-modal",
+    "section[class*='z-[1050]']"
+  ]
+  ```
+  然后重跑 `generate.py`。验证法：看 `_login_shot.png` 或 `_diag_lyrics.png` 里是否出现活动弹窗，
+  或运行 `python _diag_lyrics.py` 看 `elementFromPoint` 命中的是不是遮罩。
 - **「找不到生成按钮」**：MiniMax 的生成按钮文字是**「限时免费」**（底部紫色大按钮，前面有个图标）。
   `config.json` 的 `selectors.generate_button` **必须保留** `button:has-text('限时免费')` 且放在第一位。
   不确定按钮长什么样时，跑 `python inspect_buttons.py` 列出页面所有按钮的文字/class/位置，照着改配置。
@@ -263,6 +275,9 @@ cd <工作目录>
      `https://www.minimaxi.com/v1/api/music/history_list` 接口里返回。
      `generate.py` 已内置主动轮询该接口（按歌名/风格匹配新出现的 `music_id`），不需要用户干预。
   2. 新作品刚出现时 `audio_url` **是空的**（还在转码），脚本会继续等到链接就绪才下载。
+     **Music 3.0 模型实测转码需 10-15 分钟**，如果默认 7 分钟超时不够，
+     把 `config.json` 的 `wait_timeout_sec` 改成 `900`（15 分钟）。
+     日志里出现「新作品已产生：…等音频转码…」说明生成已经成功，只是要等转码，不要急着重试。
   3. 若仍拿不到，跑 `python probe_generate.py`：它会全程截图 + 记录后台请求，
      看 `_probe_shot.png` 和 `_probe_records.json` 就能定位。
 - **歌已生成但没进 library**（比如上一轮超时中断）：不要重新生成（浪费额度）。
@@ -290,12 +305,27 @@ cd <工作目录>
 表现为「点了生成没反应」「填表填到一半卡住」。`popup_guard.py` 已自动处理，正常情况下不用管。
 
 **它按这个顺序处理（先礼后兵）**：
-1. 点弹窗里的 × 关闭按钮（antd `.ant-modal-close`、`aria-label='关闭'` 等 32 种写法）
+1. 点弹窗里的 × 关闭按钮（antd `.ant-modal-close`、`aria-label='close'` 等 32 种写法）
 2. 点弹窗底部的主按钮（`.arco-modal-footer .arco-btn-primary` 等——番茄封面裁剪弹窗就是这种）
 3. 点**确认类**文字按钮（我知道了 / 确定 / 好的 / 保存 / 完成 …）
 4. 点关闭类文字按钮（取消 / 以后再说 …）
-5. 按 Esc
-6. 最后手段：删掉挡路的整屏遮罩（★ **默认关闭**，见下）
+5. **兜底**：挡路浮层右上角的小图标（不依赖 class 名字，见下）
+6. 按 Esc
+7. 最后手段：删掉挡路的整屏遮罩（★ **默认关闭**，见下）
+
+**★ 它是怎么"认出"弹窗的（关键设计）★**
+光靠 class 名字猜弹窗容器注定有漏网的 —— MiniMax 的容器是 `section.responsive-modal z-[1050]`，
+压根不在标准 antd/arco 名单里，结果守卫连找都没往里找（这正是「卡在弹窗」的真正原因）。
+所以现在**双管齐下**：
+- **白名单容器**（`popup_roots` / `extra_popup_roots`）：已知的标准容器 + 用户补充的
+- **遮挡浮层**（`use_overlay_scope`，默认开）：凡是 `fixed/absolute + z-index≥100 + 覆盖≥40% 屏幕`
+  的元素，一律也当作用域。**靠"它挡住了屏幕"这个行为来识别，跟它叫什么名字无关。**
+- **角落兜底**：如果连 × 的 class 里都没有 close 字样（比如叫 `.icon-btn`、`.abc-shut`），
+  就按「在对话框右上角 + 尺寸 ≤64px + 内容是 ❌/×/✕」来认。**注意是相对"对话框面板"
+  的右上角，不是整屏遮罩的右上角**——居中的对话框两者能差几百像素，按遮罩算会全部漏掉。
+
+这三层都建立在"作用域"上，**不是扫描整个页面**，所以表单里标签的 × 依然是安全的
+（标签既不覆盖屏幕，也不是 fixed 定位）。
 
 **为什么优先点「确认」而不是删遮罩**：点确认走的是页面自己的正常关闭流程，弹窗会自己关掉，
 页面内部状态（比如"这个公告我读过了"）也保持一致。删遮罩则是绕过页面逻辑的粗暴做法，
@@ -314,9 +344,13 @@ cd <工作目录>
 以及文字拦截：含「删除 / 移除 / 清空 / 注销」等词的按钮**一律不点**。
 
 **什么时候需要人工介入**：
-- 遇到一种新弹窗关不掉 → 把它的容器选择器加进 `config.json` 的 `popup_guard.extra_popup_roots`，
-  不用改代码。**不要**图省事打开 `scan_whole_page`。
+- **弹窗还是关不掉** → 先跑 `python probe_popup.py`：它会打开真实页面，把挡路浮层的
+  tag/class/id/role/z-index 全列出来，告诉你里面有哪些可点的东西，并**给出可直接抄进
+  `extra_popup_roots` 的选择器建议**，另外存一张 `_probe_popup.png` 供肉眼核对。
+  把建议的选择器加进 `config.json → popup_guard.extra_popup_roots` 即可，不用改代码。
+  **不要**图省事打开 `scan_whole_page`。
 - 想彻底关掉文字按钮自动点击，把 `allow_text_buttons` 设为 `false`。
+- 想关掉"右上角小图标"这道兜底，把 `use_overlay_scope` 设为 `false`（不建议，会显著降低命中率）。
 - 想确认守卫是否正常工作 → 跑 `python test_popup_guard.py`（真起 chromium 真点一遍，21 项自检，
   含"表单内容不被误删""确认按钮优先""危险弹窗不点"三项关键回归）。
 - 看到日志里 `⚑ 自动关闭原生弹窗（alert）：…` → 那是网页弹的原生对话框，内容通常有用

@@ -143,7 +143,7 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | 封面不合规 | 番茄要 PNG、≥1440×1440、≤10MB，脚本生成的就是 1440×1440，别手改后缀 |
 | 想只发某几首 | `python fanqie_upload.py --songs 歌名-01,歌名-02` |
 | 想重发已发过的 | 删掉 `published.json` 里对应记录 |
-| **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。遇到关不掉的新型弹窗，把它的容器选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
+| **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
 
 <details>
 <summary><b>关于弹窗：脚本是怎么自动处理的</b></summary>
@@ -151,12 +151,18 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 网站不定时弹浮层（活动公告 / 新功能引导 / 会员推广 / 额度提醒），不关掉就点不动任何按钮。
 `popup_guard.py` 会自动按「先礼后兵」的顺序处理：
 
-1. 点弹窗里的 × 关闭按钮（32 种常见写法：antd 的 `.ant-modal-close`、`aria-label='关闭'` 等）
+1. 点弹窗里的 × 关闭按钮（32 种常见写法：antd 的 `.ant-modal-close`、`aria-label='close'` 等）
 2. 点弹窗底部的主按钮（番茄的封面裁剪弹窗就是这种，文案可能是「确定 / 保存 / 完成」）
 3. 点**确认类**文字按钮（我知道了 / 确定 / 好的 / 保存 / 完成 …）
 4. 点关闭类文字按钮（取消 / 以后再说 …）
-5. 按 Esc
-6. 最后手段：删掉挡路的整屏遮罩（**默认关闭**）
+5. **兜底**：挡路浮层右上角的小图标（连 close 类名都没有时，按位置和 ❌ 符号认）
+6. 按 Esc
+7. 最后手段：删掉挡路的整屏遮罩（**默认关闭**）
+
+**它是怎么认出弹窗的**：光靠 class 名字猜容器注定有漏网的（MiniMax 的容器是
+`section.responsive-modal z-[1050]`，不在任何标准名单里）。所以除了白名单，
+凡是「固定定位 + z-index≥100 + 覆盖四成以上屏幕」的元素一律也算作用域——
+**靠"它挡住了屏幕"这个行为识别，跟它叫什么名字无关**。
 
 **为什么优先点「确认」而不是删遮罩**：点确认走的是页面自己的正常关闭流程，弹窗会自己关掉，
 页面状态也保持一致。删遮罩是绕过页面逻辑的粗暴做法，可能连带干掉需要你看一眼的重要弹窗
@@ -214,7 +220,8 @@ music-workflow/
     ├── probe_generate.py  生成探针（查「点生成后等不到歌」）
     ├── inspect_buttons.py 按钮探测器（页面改版时定位 selector）
     ├── popup_guard.py     弹窗守卫：自动关掉挡路的浮层/原生弹窗
-    ├── test_popup_guard.py 弹窗守卫自检（真起浏览器跑 14 项）
+    ├── probe_popup.py     弹窗探针（查「弹窗关不掉」：抓真实 DOM 结构 + 给选择器建议）
+    ├── test_popup_guard.py 弹窗守卫自检（真起浏览器跑 30 项）
     ├── browser_utils.py   跨平台浏览器清理
     ├── config.json        平台 URL、选择器、封面参数
     ├── tasks.csv          歌单模板

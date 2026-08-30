@@ -266,7 +266,37 @@ _JS_HELPERS = """
     }
     return false;
   }
-  function __pgScopes(roots, scanWhole) {
+  // 找出"确实挡住屏幕的浮层"：fixed/absolute + z-index>=100 + 覆盖 >=40% 视口
+  //
+  // 为什么需要它：光靠 class 名字猜弹窗容器（白名单）注定有漏网的 ——
+  // 网站可以用任何名字，MiniMax 就不是标准 antd 容器，结果守卫压根没往里找。
+  // 而"它挡住了屏幕"这个判据是**行为层面**的，跟它叫什么名字无关，可靠得多。
+  //
+  // 为什么它依然安全：表单里的标签 ×（删内容用的）永远不可能满足
+  // "fixed 定位 + z-index>=100 + 覆盖四成以上屏幕"这几个条件，
+  // 所以不会被当成弹窗作用域。这跟"扫描整个页面"有本质区别。
+  function __pgBlockingOverlays() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const out = [];
+    let els;
+    try { els = document.querySelectorAll('body *'); } catch (e) { return out; }
+    for (const el of els) {
+      let st, r;
+      try {
+        st = getComputedStyle(el);
+        r = el.getBoundingClientRect();
+      } catch (e) { continue; }
+      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+      if (st.position !== 'fixed' && st.position !== 'absolute') continue;
+      const z = parseInt(st.zIndex, 10);
+      if (isNaN(z) || z < 100) continue;
+      if (!r || r.width < vw * 0.4 || r.height < vh * 0.4) continue;
+      if (parseFloat(st.opacity || '1') < 0.05) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  function __pgScopes(roots, scanWhole, useOverlay) {
     const scopes = [];
     if (!scanWhole) {
       for (const r of (roots || [])) {
@@ -278,6 +308,13 @@ _JS_HELPERS = """
       }
     } else {
       scopes.push(document);
+    }
+    // 除了已知白名单，再把"确实挡住屏幕的浮层"也算作作用域。
+    // 这样即使网站的弹窗容器叫什么怪名字，守卫也找得到里面的 ×。
+    if (useOverlay && !scanWhole) {
+      for (const e of __pgBlockingOverlays()) {
+        if (scopes.indexOf(e) < 0) scopes.push(e);
+      }
     }
     return scopes;
   }
@@ -292,7 +329,7 @@ _JS_HELPERS = """
 _JS_FIND_ICON = "(cfg) => {" + _JS_HELPERS + """
   const sels = cfg.sels, black = cfg.blacklist || [];
   const blockwords = cfg.blockwords || [];
-  const scopes = __pgScopes(cfg.roots, cfg.scanWhole);
+  const scopes = __pgScopes(cfg.roots, cfg.scanWhole, cfg.useOverlayScope);
   const found = [];
   const vw = window.innerWidth, vh = window.innerHeight;
 
@@ -339,6 +376,110 @@ _JS_FIND_ICON = "(cfg) => {" + _JS_HELPERS + """
 }
 """
 
+# 兜底：在"挡住屏幕的浮层"里找右上角的小图标。
+#
+# 为什么需要它：有的网站 ❌ 按钮的 class 里压根没有 close 字样（比如叫 .icon-x、
+# .btn-shut，甚至就是个裸 span），靠选择器列表猜不到。但关闭按钮有个几乎通用的
+# 特征：**在弹窗右上角、而且很小**。按位置和尺寸找，就不依赖它叫什么名字了。
+#
+# 只在前面几种方法都找不到时才用，一次最多标记 1 个，把误点风险压到最低。
+_JS_FIND_CORNER = "(cfg) => {" + _JS_HELPERS + """
+  const black = cfg.blacklist || [];
+  const blockwords = cfg.blockwords || [];
+  const overlays = __pgBlockingOverlays();
+  const found = [];
+
+  function __pgBlocked(el) {
+    const t = ((el.innerText || el.textContent) || '').trim();
+    if (!t) return false;
+    for (const w of blockwords) { if (t.indexOf(w) >= 0) return true; }
+    return false;
+  }
+  // 明确的关闭符号，命中就基本可以确信是关闭按钮
+  function __pgCloseGlyph(el) {
+    const t = ((el.innerText || el.textContent) || '').trim();
+    if (!t) return false;
+    return t === '\\u274C' || t === '\\u00D7' || t === '\\u2715' ||
+           t === '\\u2716' || t === '\\u2717';
+  }
+
+  const vw = window.innerWidth, vh = window.innerHeight;
+
+  // 找"面板"祖先：不是全屏、尺寸适中的那个容器就是真正的对话框。
+  // ★ 关键：× 通常在【对话框】的右上角，而不是【整屏遮罩】的右上角 ——
+  //   两者在大屏上能差出几百像素，按遮罩算会全都匹配不上。
+  function __pgPanel(el, ov) {
+    let p = el.parentElement;
+    let guard = 0;
+    while (p && p !== ov.parentElement && guard++ < 12) {
+      let pr;
+      try { pr = p.getBoundingClientRect(); } catch (e) { break; }
+      if (pr && pr.width >= 200 && pr.width <= vw * 0.94 && pr.height <= vh * 0.94) {
+        return p;
+      }
+      p = p.parentElement;
+    }
+    return ov;
+  }
+
+  for (const ov of overlays) {
+    let or;
+    try { or = ov.getBoundingClientRect(); } catch (e) { continue; }
+    if (!or || or.width < 100 || or.height < 100) continue;
+
+    let cands;
+    try {
+      cands = ov.querySelectorAll('button, a, [role="button"], svg, i, span, div');
+    } catch (e) { continue; }
+
+    let best = null, bestIsGlyph = false;
+    for (const el of cands) {
+      if (el === ov) continue;
+      if (el.hasAttribute('data-pg-close')) continue;
+      if (__pgDangerous(el, black)) continue;
+      if (__pgBlocked(el)) continue;
+      let r, st;
+      try {
+        r = el.getBoundingClientRect();
+        st = getComputedStyle(el);
+      } catch (e) { continue; }
+      if (!r || r.width < 8 || r.height < 8) continue;
+      if (r.width > 64 || r.height > 64) continue;          // 关闭按钮都很小
+      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+      if (parseFloat(st.opacity || '1') < 0.05) continue;
+
+      // 以【所属面板】的右上角为参照，而不是整屏遮罩的右上角
+      const panel = __pgPanel(el, ov);
+      let pr;
+      try { pr = panel.getBoundingClientRect(); } catch (e) { continue; }
+      if (!pr || pr.width < 200) continue;
+      const maxDx = Math.max(60, pr.width * 0.25);
+      const maxDy = Math.max(60, pr.height * 0.25);
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const dx = pr.right - cx, dy = cy - pr.top;
+      if (dx < 0 || dy < 0 || dx > maxDx || dy > maxDy) continue;
+
+      const isGlyph = __pgCloseGlyph(el);
+      if (isGlyph && !bestIsGlyph) { best = el; bestIsGlyph = true; }
+      else if (!bestIsGlyph && !best) { best = el; }
+    }
+
+    if (best) {
+      let target = best;
+      if (best.tagName !== 'BUTTON' && best.tagName !== 'A') {
+        const up = best.closest('button, a, [role="button"]');
+        if (up) target = up;
+      }
+      if (!target.hasAttribute('data-pg-close') && !__pgDangerous(target, black)) {
+        target.setAttribute('data-pg-close', '1');
+        found.push('corner:' + (bestIsGlyph ? 'glyph' : 'position'));
+        break;                                   // 一次只处理一个，稳一点
+      }
+    }
+  }
+  return found;
+}"""
+
 # 第二遍：找文字类按钮。
 #
 # 分三档，优先级从高到低：
@@ -352,7 +493,7 @@ _JS_FIND_TEXT = "(cfg) => {" + _JS_HELPERS + """
   const dismissKeys = cfg.dismissKeys || [];
   const blockwords = cfg.blockwords || [];
   const black = cfg.blacklist || [];
-  const scopes = __pgScopes(cfg.roots, cfg.scanWhole);
+  const scopes = __pgScopes(cfg.roots, cfg.scanWhole, cfg.useOverlayScope);
   const vw = window.innerWidth, vh = window.innerHeight;
   const cExact = [], cFuzzy = [], dExact = [], dFuzzy = [];
 
@@ -468,6 +609,9 @@ def load_guard_config(cfg):
         "allow_text_buttons": bool(g.get("allow_text_buttons", True)),
         # 默认不扫描整个页面 —— 全页面扫 × 图标会把表单里已填的标签删掉
         "scan_whole_page": bool(g.get("scan_whole_page", False)),
+        # 除了白名单容器，也把"确实挡住屏幕的浮层"算作作用域。
+        # 靠行为（挡住屏幕）而不是名字（class）来识别弹窗，网站换名字也不怕。
+        "use_overlay_scope": bool(g.get("use_overlay_scope", True)),
         "max_rounds": max(1, int(g.get("max_rounds", 3))),
         "press_escape": bool(g.get("press_escape", True)),
         # 默认关闭：删遮罩是绕过页面逻辑的粗暴手段，只在确实没别的办法时手动开
@@ -593,6 +737,7 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                     "blacklist": g["dangerous_selectors"],
                     "blockwords": g["text_blockwords"],
                     "scanWhole": g["scan_whole_page"],
+                    "useOverlayScope": g["use_overlay_scope"],
                 })
             except Exception:
                 pass
@@ -607,6 +752,7 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                         "blacklist": g["dangerous_selectors"],
                         "blockwords": g["text_blockwords"],
                         "scanWhole": g["scan_whole_page"],
+                        "useOverlayScope": g["use_overlay_scope"],
                     })
                 except Exception:
                     pass
@@ -624,6 +770,7 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                         "roots": g["popup_roots"],
                         "blacklist": g["dangerous_selectors"],
                         "scanWhole": g["scan_whole_page"],
+                        "useOverlayScope": g["use_overlay_scope"],
                     })
                 except Exception:
                     pass
@@ -631,7 +778,19 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                 if round_hit == 0:
                     round_hit += _click_tagged(page, "data-pg-text", 2, log, "关闭按钮")
 
-            # ③ Esc 键：有些引导层吃这一套，成本为零
+            # ③ 兜底：挡路浮层右上角的小图标（不依赖 class 名字，按位置和尺寸找）
+            #    MiniMax 的 ❌ 就有可能不在任何 close-* 选择器里。
+            if round_hit == 0 and g["use_overlay_scope"]:
+                try:
+                    page.evaluate(_JS_FIND_CORNER, {
+                        "blacklist": g["dangerous_selectors"],
+                        "blockwords": g["text_blockwords"],
+                    })
+                except Exception:
+                    pass
+                round_hit += _click_tagged(page, "data-pg-close", 1, log, "右上角关闭图标")
+
+            # ④ Esc 键：有些引导层吃这一套，成本为零
             if round_hit == 0 and g["press_escape"] and rnd == 0:
                 try:
                     page.keyboard.press("Escape")
@@ -639,7 +798,7 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
                 except Exception:
                     pass
 
-            # ④ 最后手段：删掉挡路的整屏遮罩，再回到下一轮重新点按钮。
+            # ⑤ 最后手段：删掉挡路的整屏遮罩，再回到下一轮重新点按钮。
             #    ★ 默认关闭 ★ —— 删遮罩是绕过页面逻辑的粗暴手段，可能连带干掉
             #    需要人看一眼的重要弹窗（额度提醒、验证提示、授权确认）。
             #    只有确认「弹窗纯属干扰、且确实点不动」时才手动开启。
@@ -666,16 +825,24 @@ def dismiss_popups(page, cfg=None, log=None, force_mask=False):
 
 
 def goto_with_guard(page, url, cfg=None, log=None, wait_until="domcontentloaded",
-                    timeout=60000, settle_sec=0.0):
-    """goto 之后自动清弹窗。替换掉脚本里所有的裸 page.goto。"""
+                    timeout=60000, settle_sec=0.0, dismiss=True):
+    """goto 之后自动清弹窗。替换掉脚本里所有的裸 page.goto。
+
+    ★ dismiss=False 用在「还没登录」的时候 ★
+    未登录时弹出来的往往就是登录入口本身（登录框、扫码框、验证提示），
+    把它关掉后续就再也走不下去了。所以：
+        - 进入页面、但还没确认登录 → dismiss=False（只跳转，不动弹窗）
+        - 确认已登录（或刚登录成功）之后 → 再单独调 dismiss_popups()
+    """
     try:
         page.goto(url, wait_until=wait_until, timeout=timeout)
     except Exception:
         pass
     if settle_sec:
         time.sleep(settle_sec)
-    time.sleep(load_guard_config(cfg)["dismiss_after_goto_ms"] / 1000.0)
-    dismiss_popups(page, cfg=cfg, log=log)
+    if dismiss:
+        time.sleep(load_guard_config(cfg)["dismiss_after_goto_ms"] / 1000.0)
+        dismiss_popups(page, cfg=cfg, log=log)
     return page
 
 
@@ -803,6 +970,7 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
                     "blacklist": g["dangerous_selectors"],
                     "blockwords": g["text_blockwords"],
                     "scanWhole": g["scan_whole_page"],
+                    "useOverlayScope": g["use_overlay_scope"],
                 })
             except Exception:
                 pass
@@ -817,6 +985,7 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
                         "blacklist": g["dangerous_selectors"],
                         "blockwords": g["text_blockwords"],
                         "scanWhole": g["scan_whole_page"],
+                        "useOverlayScope": g["use_overlay_scope"],
                     })
                 except Exception:
                     pass
@@ -832,12 +1001,24 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
                         "roots": g["popup_roots"],
                         "blacklist": g["dangerous_selectors"],
                         "scanWhole": g["scan_whole_page"],
+                        "useOverlayScope": g["use_overlay_scope"],
                     })
                 except Exception:
                     pass
                 round_hit += await _a_click_tagged(page, "data-pg-confirm", 2, log, "确认按钮")
                 if round_hit == 0:
                     round_hit += await _a_click_tagged(page, "data-pg-text", 2, log, "关闭按钮")
+
+            # 兜底：挡路浮层右上角的小图标（不依赖 class 名字）
+            if round_hit == 0 and g["use_overlay_scope"]:
+                try:
+                    await page.evaluate(_JS_FIND_CORNER, {
+                        "blacklist": g["dangerous_selectors"],
+                        "blockwords": g["text_blockwords"],
+                    })
+                except Exception:
+                    pass
+                round_hit += await _a_click_tagged(page, "data-pg-close", 1, log, "右上角关闭图标")
 
             if round_hit == 0 and g["press_escape"] and rnd == 0:
                 try:
@@ -878,8 +1059,12 @@ async def a_dismiss_popups(page, cfg=None, log=None, force_mask=False):
 
 
 async def a_goto_with_guard(page, url, cfg=None, log=None, wait_until="domcontentloaded",
-                            timeout=60000, settle_sec=0.0):
-    """goto_with_guard 的异步版"""
+                            timeout=60000, settle_sec=0.0, dismiss=True):
+    """goto_with_guard 的异步版。
+
+    ★ dismiss=False 用在「还没登录」的时候 ★ —— 未登录时弹出的往往就是登录入口，
+    关掉它后续就走不下去了。登录成功之后再单独调 a_dismiss_popups()。
+    """
     import asyncio
     try:
         await page.goto(url, wait_until=wait_until, timeout=timeout)
@@ -887,8 +1072,9 @@ async def a_goto_with_guard(page, url, cfg=None, log=None, wait_until="domconten
         pass
     if settle_sec:
         await asyncio.sleep(settle_sec)
-    await asyncio.sleep(load_guard_config(cfg)["dismiss_after_goto_ms"] / 1000.0)
-    await a_dismiss_popups(page, cfg=cfg, log=log)
+    if dismiss:
+        await asyncio.sleep(load_guard_config(cfg)["dismiss_after_goto_ms"] / 1000.0)
+        await a_dismiss_popups(page, cfg=cfg, log=log)
     return page
 
 

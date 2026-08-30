@@ -22,6 +22,7 @@
 思路：不 mock、不假装，真起一个 chromium 真点一遍。
 """
 import asyncio
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -33,8 +34,8 @@ from playwright.sync_api import sync_playwright            # noqa: E402
 from playwright.async_api import async_playwright          # noqa: E402
 
 from popup_guard import (                                  # noqa: E402
-    guard_page, dismiss_popups, click_with_guard,
-    a_guard_page, a_dismiss_popups, a_click_with_guard,
+    guard_page, dismiss_popups, click_with_guard, goto_with_guard,
+    a_guard_page, a_dismiss_popups, a_click_with_guard, a_goto_with_guard,
 )
 
 # ---------------------------------------------------------------- 假页面
@@ -59,8 +60,8 @@ body{margin:0;height:100vh;font-family:sans-serif}
 _SCRIPT = "window.__clicks=0;window.__alertFired=0;window.__c1=0;window.__c2=0;"
 
 
-def _page(body, script=_SCRIPT):
-    return f"<!doctype html><html><head><meta charset='utf-8'><style>{_STYLE}</style>" \
+def _page(body, script=_SCRIPT, extra_css=""):
+    return f"<!doctype html><html><head><meta charset='utf-8'><style>{_STYLE}{extra_css}</style>" \
            f"</head><body>{body}<script>{script}</script></body></html>"
 
 
@@ -144,6 +145,73 @@ HTML_DANGER = _page("""
 </div>
 """)
 
+# ⑦ ★ 模拟 MiniMax：容器 class 完全不是标准 antd/arco，也没有 role=dialog。
+#    守卫靠"它挡住了屏幕"来认出这是弹窗，而不是靠猜 class 名字。
+HTML_MINIMAX = _page("""
+<button id="genBtn" onclick="window.__clicks=(window.__clicks||0)+1">限时免费</button>
+<div class="music-modal-container">
+  <div class="music-modal-mask"></div>
+  <div class="music-modal-content">
+    <span class="icon-close" onclick="document.querySelector('.music-modal-container').style.display='none';window.__c1=1">&#10060;</span>
+    <h3>新功能上线</h3><p>来看看有什么新东西</p>
+  </div>
+</div>
+""", extra_css="""
+.music-modal-container{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center}
+.music-modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000}
+.music-modal-content{background:#fff;padding:36px;width:420px;position:relative;border-radius:8px;z-index:1001}
+.icon-close{position:absolute;right:12px;top:10px;width:24px;height:24px;cursor:pointer}
+""")
+
+# ⑧ ★★ 最刁钻的一种：容器 class 不标准，❌ 的 class 里也完全没有 close 字样，
+#     而且它是个裸 span（不是 button）。只能靠"在对话框右上角、又小、还是 ❌ 符号"认出来。
+HTML_CORNER = _page("""
+<button id="genBtn" onclick="window.__clicks=(window.__clicks||0)+1">限时免费</button>
+<div class="xyz-layer">
+  <div class="xyz-box">
+    <span class="abc-shut" onclick="document.querySelector('.xyz-layer').style.display='none';window.__c1=1">&#10060;</span>
+    <h3>活动公告</h3><p>这条弹窗什么标准类名都没有</p>
+  </div>
+</div>
+""", extra_css="""
+.xyz-layer{position:fixed;inset:0;z-index:1500;display:flex;align-items:center;justify-content:center}
+.xyz-box{background:#fff;padding:36px;width:420px;position:relative;border-radius:8px}
+.abc-shut{position:absolute;right:12px;top:10px;width:24px;height:24px;cursor:pointer;font-size:18px}
+""")
+
+# ⑨ ★ MiniMax 真实结构（用户实测抓到的）
+#    容器是 section.responsive-modal z-[1050]，❌ 的 class 是 icon-btn（没有 close 字样）
+HTML_REAL = _page("""
+<button id="genBtn" onclick="window.__clicks=(window.__clicks||0)+1">限时免费</button>
+<section class="responsive-modal z-[1050] flex items-center justify-center">
+  <div class="modal-panel">
+    <button class="icon-btn" onclick="document.querySelector('section.responsive-modal').style.display='none';window.__c1=1">&#10060;</button>
+    <h3>公告</h3><p>MiniMax 真实结构</p>
+  </div>
+</section>
+""", extra_css="""
+.responsive-modal{position:fixed;inset:0;z-index:1050;display:flex;align-items:center;justify-content:center}
+.modal-panel{background:#fff;padding:36px;width:460px;position:relative;border-radius:12px}
+.icon-btn{position:absolute;right:12px;top:12px;width:28px;height:28px;border:none;background:transparent;cursor:pointer}
+""")
+
+# ⑩ ★ MiniMax 活动弹窗（用户实测记录：关闭按钮带 aria-label='close'）
+#    这条走的是「选择器直接命中」路径，不需要靠角落兜底，验证主路径可用。
+HTML_REAL2 = _page("""
+<button id="genBtn" onclick="window.__clicks=(window.__clicks||0)+1">限时免费</button>
+<section class="responsive-modal z-[1050]">
+  <div class="modal-panel">
+    <button aria-label="close" class="close-x"
+      onclick="document.querySelector('section.responsive-modal').style.display='none';window.__c1=1"></button>
+    <h3>Music 3.0 创作者内测</h3><p>欢迎参加内测活动</p>
+  </div>
+</section>
+""", extra_css="""
+.responsive-modal{position:fixed;inset:0;z-index:1050;display:flex;align-items:center;justify-content:center}
+.modal-panel{background:#fff;padding:36px;width:460px;position:relative;border-radius:12px}
+.close-x{position:absolute;right:14px;top:14px;width:24px;height:24px;border:none;background:#eee;cursor:pointer}
+""")
+
 # 带 alert 的版本
 HTML_ALERT = HTML_MAIN.replace(
     "window.__alertFired=0;",
@@ -169,6 +237,12 @@ def check(name, ok, detail=""):
 
 
 def run_tests():
+    # 真实配置（config.json），测试 14 用它跑，确保真实设置下确实有效
+    try:
+        real_cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+    except Exception:
+        real_cfg = None
+
     tmp = tempfile.mkdtemp(prefix="pgtest_")
     url_main = _write(tmp, "main.html", HTML_MAIN)
     url_mask = _write(tmp, "mask.html", HTML_MASK)
@@ -176,6 +250,10 @@ def run_tests():
     url_confirm = _write(tmp, "confirm.html", HTML_CONFIRM)
     url_arco = _write(tmp, "arco.html", HTML_ARCO)
     url_danger = _write(tmp, "danger.html", HTML_DANGER)
+    url_minimax = _write(tmp, "minimax.html", HTML_MINIMAX)
+    url_corner = _write(tmp, "corner.html", HTML_CORNER)
+    url_real = _write(tmp, "real.html", HTML_REAL)
+    url_real2 = _write(tmp, "real2.html", HTML_REAL2)
     url_alert = _write(tmp, "alert.html", HTML_ALERT)
 
     with sync_playwright() as p:
@@ -304,6 +382,98 @@ def run_tests():
         check("显式 force_mask=True 时才移除", left_forced == 0,
               f"剩余 {left_forced} 层")
         pg8.close()
+
+        # ── 11. ★ 登录前不清弹窗
+        print("\n【测试 11】★ 未登录时 —— 弹窗一个都不能关（登录框会被关掉）")
+        pg11 = browser.new_page()
+        pg11.set_default_timeout(6000)
+        logs11 = []
+        guard_page(pg11, log=logs11.append)
+        # dismiss=False：模拟「刚进页面、还没确认登录」
+        goto_with_guard(pg11, url_main, log=logs11.append, dismiss=False)
+        pg11.wait_for_timeout(600)
+        c1 = pg11.evaluate("window.__c1 || 0")
+        c2 = pg11.evaluate("window.__c2 || 0")
+        still = pg11.evaluate("document.querySelectorAll('#modal1,#textPop').length")
+        check("dismiss=False 时弹窗全部保留", c1 == 0 and c2 == 0 and still == 2,
+              f"modal1关闭={c1} textPop关闭={c2} 剩余浮层={still}")
+        # 确认登录后（dismiss=True）就要能关掉
+        goto_with_guard(pg11, url_main, log=logs11.append, dismiss=True)
+        pg11.wait_for_timeout(600)
+        c1b = pg11.evaluate("window.__c1 || 0")
+        c2b = pg11.evaluate("window.__c2 || 0")
+        check("登录后再跳（dismiss=True）就能正常清掉", c1b == 1 and c2b == 1,
+              f"modal1={c1b} textPop={c2b}")
+        pg11.close()
+
+        # ── 12. ★ 模拟 MiniMax：容器 class 非标准，靠"挡住屏幕"认出来
+        print("\n【测试 12】★ 非标准容器弹窗（模拟 MiniMax）—— 靠行为识别而非 class 名")
+        pg12 = browser.new_page()
+        pg12.set_default_timeout(6000)
+        logs12 = []
+        guard_page(pg12, log=logs12.append)
+        pg12.goto(url_minimax)
+        pg12.wait_for_timeout(400)
+        n = dismiss_popups(pg12, log=logs12.append)
+        pg12.wait_for_timeout(500)
+        c1 = pg12.evaluate("window.__c1 || 0")
+        left = pg12.evaluate("document.querySelectorAll('.music-modal-container').length")
+        check("容器不在白名单也能关掉（靠遮挡识别）", c1 == 1, f"关闭={c1}，处理={n} 处")
+        # 关掉之后，被挡住的按钮必须能点了
+        got = click_with_guard(pg12, "#genBtn", log=logs12.append, timeout=2500)
+        clicks = pg12.evaluate("window.__clicks")
+        check("关掉之后生成按钮能正常点中", got and clicks == 1,
+              f"返回={got}，计数={clicks}")
+        pg12.close()
+
+        # ── 13. ★★ 角落兜底：❌ 没有任何 close 类名
+        print("\n【测试 13】★★ 角落兜底 —— ❌ 连 close 类名都没有也能关掉")
+        pg13 = browser.new_page()
+        pg13.set_default_timeout(6000)
+        logs13 = []
+        guard_page(pg13, log=logs13.append)
+        pg13.goto(url_corner)
+        pg13.wait_for_timeout(400)
+        n = dismiss_popups(pg13, log=logs13.append)
+        pg13.wait_for_timeout(500)
+        c1 = pg13.evaluate("window.__c1 || 0")
+        check("靠「右上角+小尺寸+❌符号」认出关闭按钮", c1 == 1, f"关闭={c1}，处理={n} 处")
+        got = click_with_guard(pg13, "#genBtn", log=logs13.append, timeout=2500)
+        clicks = pg13.evaluate("window.__clicks")
+        check("关掉之后生成按钮能点中", got and clicks == 1, f"计数={clicks}")
+        pg13.close()
+
+        # ── 14. ★ MiniMax 真实结构（用 config.json 里的真实配置跑）
+        print("\n【测试 14】★ MiniMax 真实结构 —— section.responsive-modal + icon-btn")
+        pg14 = browser.new_page()
+        pg14.set_default_timeout(6000)
+        logs14 = []
+        guard_page(pg14, log=logs14.append)
+        pg14.goto(url_real)
+        pg14.wait_for_timeout(400)
+        n = dismiss_popups(pg14, cfg=real_cfg, log=logs14.append)
+        pg14.wait_for_timeout(500)
+        c1 = pg14.evaluate("window.__c1 || 0")
+        check("用真实配置能关掉 MiniMax 弹窗", c1 == 1, f"关闭={c1}，处理={n} 处")
+        got = click_with_guard(pg14, "#genBtn", cfg=real_cfg, log=logs14.append, timeout=2500)
+        clicks = pg14.evaluate("window.__clicks")
+        check("关掉之后生成按钮能点中", got and clicks == 1, f"计数={clicks}")
+        pg14.close()
+
+        # ── 15. ★ MiniMax 活动弹窗（aria-label='close'，走选择器直接命中路径）
+        print("\n【测试 15】★ MiniMax 活动弹窗 —— button[aria-label='close']")
+        pg15 = browser.new_page()
+        pg15.set_default_timeout(6000)
+        logs15 = []
+        guard_page(pg15, log=logs15.append)
+        pg15.goto(url_real2)
+        pg15.wait_for_timeout(400)
+        n = dismiss_popups(pg15, cfg=real_cfg, log=logs15.append)
+        pg15.wait_for_timeout(500)
+        c1 = pg15.evaluate("window.__c1 || 0")
+        check("aria-label='close' 能被选择器直接命中", c1 == 1,
+              f"关闭={c1}，处理={n} 处，日志={logs15[0].strip() if logs15 else '无'}")
+        pg15.close()
 
         # ── 9. 番茄/Arco 风格弹窗（footer 主按钮）
         print("\n【测试 9】番茄/Arco 风格 —— footer 主按钮就是确认")

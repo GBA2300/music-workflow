@@ -20,6 +20,84 @@
 
 ---
 
+## 2026-08-30 · MiniMax 生成 · Music 3.0 出歌时间约 10-13 分钟，默认 7 分钟超时不够
+
+- **现象**：`generate.py` 提示「✓ 已点生成」后，轮询 `history_list` 7 分钟仍拿不到 `audio_url`，
+  报「✗ 超时，没拿到音频链接」。查看 `history_list` 接口发现新条目已经产生，只是 `audio_url` 为空。
+- **根因**：MiniMax Music 3.0 模型生成后需要后端转码，**实测耗时 10-13 分钟**才填上 `audio_url`。
+  脚本默认 `wait_timeout_sec=420`（7 分钟）是在旧模型（生成+转码 1-3 分钟）时代测的，
+  对 Music 3.0 不够用。超时后脚本重试，会再生成一组重复条目，浪费额度和时间。
+- **解法**：把工作目录 `config.json` 的 `wait_timeout_sec` 从 `420` 提高到 `900`（15 分钟），
+  并同步更新技能源文件 `scripts/config.json`。
+  已经 pending 的条目不要重新生成，用 `_poll_pending.py` 这类轮询脚本等 `audio_url` 就绪后直接下载。
+- **验证**：《老街的灯》在 13:20 点生成，13:32 才拿到音频（约 12 分钟）；
+  把超时改成 900 秒后，《旧时月色》正常等到 `audio_url` 并下载完成。
+- **来源**：自己 debug
+
+> **教训**：页面提示「通常 1-3 分钟」只是参考；要以接口实际返回为准。
+> 看到 `新作品已产生：等音频转码…` 说明生成已经成功，问题只是超时不够，不要急着重试。
+
+---
+
+## 2026-08-30 · MiniMax 生成 · 「找不到歌词输入框 / 找不到生成按钮」但元素明明存在
+
+- **现象**：`generate.py` 在 MiniMax 页提示「✗ 找不到歌词输入框」「✗ 找不到生成按钮」，连续两次失败。
+  但单独诊断脚本列出页面元素：歌词 `div[contenteditable='true']` 和生成按钮 `button:has-text('限时免费')` 都存在。
+- **根因**：MiniMax 上线了「Music 3.0 创作者内测，限时免费畅玩」活动弹窗，结构是
+  `<section class="fixed bottom-0 left-0 right-0 top-0 z-[1050] overflow-auto">`
+  全屏覆盖，且内部还有一个 `<section class="responsive-modal ...">` 承载弹窗内容。
+  这个弹窗**不在** `popup_guard.py` 默认的 `DEFAULT_POPUP_ROOTS` 白名单里（没有 `.ant-modal-*`，也没有 `[role='dialog']`），
+  因此 `dismiss_popups()` 没找到关闭按钮 `button[aria-label='close']`，弹窗没被关，
+  Playwright 点歌词框时报告 `<section ... z-[1050] ...> subtree intercepts pointer events`。
+- **解法**：往 `config.json → popup_guard.extra_popup_roots` 增加两个选择器，让守卫能识别这个弹窗容器：
+  ```json
+  "extra_popup_roots": [
+    "section.responsive-modal",
+    "section[class*='z-[1050]']"
+  ]
+  ```
+  同步更新技能源文件 `scripts/config.json`（`init_workdir.py` 会把它复制到新工作目录）。
+- **验证**：运行 `_diag_lyrics.py` 复现 `generate.py` 的填表流程，日志显示
+  `✓ 已关闭一个弹窗（关闭按钮）` → 歌词框 `wait_for OK / click OK / insert_text OK` → 生成按钮可见。
+  随后正式跑 `generate.py` 也成功填词并点生成。
+- **来源**：自己 debug
+
+> **教训**：改版后的弹窗不一定是标准组件库（AntD/Arco），不能指望 `[role='dialog']`。
+> 出现「元素存在但点不动」时，第一反应应该是**有全屏遮罩挡在前面**，查 `elementFromPoint` 比改选择器更快。
+
+---
+
+## 2026-08-30 · MiniMax 生成 · 守卫认不出弹窗容器（靠猜 class 名字的必然结局）
+
+- **现象**：MiniMax 登录后弹活动公告（要手动点 ❌），守卫关不掉，生成流程卡死。
+- **根因**：为了安全，关闭按钮的查找范围被限定在**已知弹窗容器白名单**里。
+  但 MiniMax 的容器是 `<section class="responsive-modal z-[1050]">`，**不在名单里**，
+  守卫连找都没往里找。用 `[class*='-close']` 也没用：❌ 的 class 是 `icon-btn`，不带 close。
+- **解法**（三层，全部建立在"作用域"上，不是扫描整个页面）：
+  1. **遮挡浮层作用域**（`use_overlay_scope`，默认开）：凡是
+     `fixed/absolute + z-index≥100 + 覆盖≥40% 屏幕` 的元素，一律也算作用域。
+     ★ **靠"它挡住了屏幕"这个行为识别，跟它叫什么名字无关** —— 这是根本性修复。
+  2. **角落兜底**：× 连 close 类名都没有时，按「在对话框右上角 + 尺寸≤64px +
+     内容是 ❌/×/✕」来认。
+  3. 用户把实测到的容器选择器加进 `extra_popup_roots`（双保险）。
+- **验证**：`test_popup_guard.py` 新增测试 12/13/14/15，覆盖
+  「容器非标准」「❌ 无 close 类名」「MiniMax 真实结构（icon-btn）」
+  「MiniMax 真实结构（aria-label='close'）」。30/30 通过。
+- **来源**：用户反馈 + 用户补充真实容器选择器 + 自己写测试复现
+
+> **教训（两个）**：
+>
+> 1. **靠名字识别不可靠，要靠行为。** 猜 class 名字（白名单）永远有漏网的，
+>    因为网站可以起任何名字。而"它挡住了屏幕"是**行为层面**的判据，与命名无关。
+>    安全与能力不是二选一 —— 把作用域限定到"确实构成遮挡的元素"，既安全又通用。
+>
+> 2. **角落兜底要按"对话框面板"的右上角算，不能按"整屏遮罩"的右上角算。**
+>    这个 bug 我差点漏掉：对话框居中时（460px 宽 / 1440px 视口），它的右上角跟
+>    遮罩的右上角差了近 500px，按遮罩算会**全部漏判**。
+>    写完先跑测试才发现 —— 又是一次"不写真机测试根本发现不了"。
+
+---
+
 ## 2026-08-30 · 全环节 · 打开页面后弹窗挡路，自动化卡住不动
 
 - **现象**：打开 MiniMax 音乐创作页后有时弹出浮层，脚本不关掉就执行不了下一步，

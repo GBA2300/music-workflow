@@ -12,7 +12,7 @@
   "quantity_per_round": 2,
   "is_instrumental": false,
 
-  "wait_timeout_sec": 420,
+  "wait_timeout_sec": 900,
   "poll_interval_sec": 4,
   "retry_times": 2,
   "pause_between_tasks_sec": 3,
@@ -38,10 +38,14 @@
     "dismiss_text_selectors": [],
     "text_blockwords": [],
     "popup_roots": [],
-    "extra_popup_roots": [],
+    "extra_popup_roots": [
+      "section.responsive-modal",
+      "section[class*='z-[1050]']"
+    ],
     "dangerous_selectors": [],
     "allow_text_buttons": true,
     "scan_whole_page": false,
+    "use_overlay_scope": true,
     "max_rounds": 3,
     "press_escape": true,
     "force_remove_blocking_mask": false,

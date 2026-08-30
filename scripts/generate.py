@@ -518,10 +518,13 @@ def main():
         try:
             if args.login:
                 log("正在打开登录页面...")
-                goto_with_guard(page, cfg["base_url"], cfg=cfg, log=log, settle_sec=2)
+                # ★ 这个模式就是专门用来登录的，绝对不能清弹窗（会关掉登录框）
+                goto_with_guard(page, cfg["base_url"], cfg=cfg, log=log,
+                                settle_sec=2, dismiss=False)
                 print("\n" + "=" * 60)
                 print("请在刚打开的浏览器窗口里完成登录（微信/手机号都行）。")
                 print("登录成功后脚本会自动继续，不需要回到黑窗口按任何键。")
+                print("（登录期间脚本不会去关任何弹窗，以免把登录框关掉）")
                 print("=" * 60)
                 if wait_logged_in(page, cfg, minutes=20):
                     log("✓ 检测到已登录")

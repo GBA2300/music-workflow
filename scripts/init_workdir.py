@@ -56,6 +56,7 @@ COPY_FILES = [
     "browser_utils.py",
     "popup_guard.py",
     "test_popup_guard.py",
+    "probe_popup.py",
     "config.json",
     "tasks.csv",
     "requirements.txt",
