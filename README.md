@@ -143,6 +143,30 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | 封面不合规 | 番茄要 PNG、≥1440×1440、≤10MB，脚本生成的就是 1440×1440，别手改后缀 |
 | 想只发某几首 | `python fanqie_upload.py --songs 歌名-01,歌名-02` |
 | 想重发已发过的 | 删掉 `published.json` 里对应记录 |
+| **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。遇到关不掉的新型弹窗，把它的选择器加进 `config.json` 的 `popup_guard.close_selectors` 最前面 |
+
+<details>
+<summary><b>关于弹窗：脚本是怎么自动处理的</b></summary>
+
+网站不定时弹浮层（活动公告 / 新功能引导 / 会员推广 / 额度提醒），不关掉就点不动任何按钮。
+`popup_guard.py` 会自动按这个顺序处理：
+
+1. 点 × 关闭按钮（32 种常见写法：antd 的 `.ant-modal-close`、`aria-label='关闭'` 等）
+2. 点不到就点文字按钮（「我知道了」「以后再说」等）
+3. 再点不到就按 Esc
+4. 还不行就**铲掉挡路的整屏遮罩**，再回到第 1 步重新点
+
+第 4 步是关键：那种「整屏半透明遮罩、还没有关闭按钮」的浮层，会把关闭按钮自己也挡住，
+不先铲掉遮罩就永远点不到。判断依据是遮罩内部**没有任何可交互元素**，
+真正的对话框（里面有按钮/输入框）会被跳过，不会误删。
+
+想确认它工作正常，跑一次自检（真起 chromium 真点一遍）：
+
+```bash
+python test_popup_guard.py     # 14 项自检，全绿说明守卫正常
+```
+
+</details>
 
 **页面改版选不到按钮时**，用自带的按钮探测器看真实按钮长什么样：
 
@@ -180,6 +204,8 @@ music-workflow/
     ├── login_check.py     登录诊断（专治「点登录没反应」）
     ├── probe_generate.py  生成探针（查「点生成后等不到歌」）
     ├── inspect_buttons.py 按钮探测器（页面改版时定位 selector）
+    ├── popup_guard.py     弹窗守卫：自动关掉挡路的浮层/原生弹窗
+    ├── test_popup_guard.py 弹窗守卫自检（真起浏览器跑 14 项）
     ├── browser_utils.py   跨平台浏览器清理
     ├── config.json        平台 URL、选择器、封面参数
     ├── tasks.csv          歌单模板

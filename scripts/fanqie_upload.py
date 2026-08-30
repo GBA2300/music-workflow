@@ -53,6 +53,14 @@ LIB_ROOT = ROOT / "library"
 UPLOAD_URL = "https://www.novelfm.com/creator/music/finished/ugc/uploadProduct"
 PROFILE = ROOT / "profile_fanqie"                # 本机专属登录态：首次运行自动创建（空），绝不打包进 skill
 
+import sys as _sys                                # noqa: E402
+_sys.path.insert(0, str(ROOT))                    # noqa: E402
+from popup_guard import (                         # noqa: E402
+    a_guard_context,
+    a_dismiss_popups,
+    a_goto_with_guard,
+)
+
 # ─────────────────────────────────────────────────────────────
 # 多账号登录说明（关键改进）
 #   本脚本不内置任何人的账号。每个使用者第一次运行时会自动打开一个真实
@@ -866,7 +874,8 @@ async def main():
             ctx = await p.chromium.launch_persistent_context(
                 str(PROFILE), headless=False, args=["--start-maximized"])
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await page.goto(UPLOAD_URL, wait_until="domcontentloaded")
+            await a_guard_context(ctx, log=log)
+            await a_goto_with_guard(page, UPLOAD_URL, log=log, settle_sec=2)
             ok = await _wait_for_upload_page(page, minutes=20)
             if ok:
                 log("✓ 登录成功，登录态已保存到 profile_fanqie/")
@@ -903,8 +912,10 @@ async def main():
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(20000)
+        # 挂弹窗守卫：番茄上传页同样会弹公告/引导层，原生 alert 不处理会直接卡死
+        await a_guard_context(ctx, log=log)
 
-        await page.goto(UPLOAD_URL, wait_until="domcontentloaded")
+        await a_goto_with_guard(page, UPLOAD_URL, log=log, settle_sec=2)
         if not await ensure_logged_in(page):
             log("⚠️ 登录等待超时，关闭。请重跑。")
             await ctx.close()
@@ -917,6 +928,8 @@ async def main():
                 if dup:
                     display = f"{title}-{i + 1:02d}"
                 log(f"===== 第 {i + 1}/{len(songs)} 首：{folder}（歌名：{display}）=====")
+                # 每首歌开填之前先清一次弹窗（上传页常在第 2 首之后弹公告/额度提示）
+                await a_dismiss_popups(page, log=log)
                 await add_song_card(page, i)
                 await upload_file(page, f"songs_{i}_songFile", audio, f"完整歌曲({display})")
                 await upload_file(page, f"songs_{i}_lyricFile", lyrics, "歌词")

@@ -35,6 +35,12 @@ except ImportError:
     print("缺少 playwright。请先运行： pip install playwright && playwright install chromium")
     sys.exit(1)
 
+from popup_guard import (  # noqa: E402
+    guard_context,
+    dismiss_popups,
+    goto_with_guard,
+)
+
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -115,7 +121,12 @@ def read_lyrics(cfg, lyrics_file):
 
 # ---------------------------------------------------------------- 页面操作
 
-def try_click(page, selectors, timeout=2500):
+def try_click(page, selectors, timeout=2500, cfg=None):
+    """依次尝试一组选择器，点到第一个可见的为止。
+
+    全部点不上时，八成是被弹窗挡住了（表现为 "intercepts pointer events"）。
+    这时先清一次弹窗再重试一轮 —— 这是修复「打开页面就卡住」的关键。
+    """
     for sel in selectors:
         try:
             loc = page.locator(sel).first
@@ -124,6 +135,18 @@ def try_click(page, selectors, timeout=2500):
             return sel
         except Exception:
             continue
+
+    # 一轮全灭：清弹窗后再试一次
+    if dismiss_popups(page, cfg=cfg, log=log, force_mask=True):
+        log("  ⚠ 点击被挡住，已清掉挡路弹窗，重试…")
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                loc.wait_for(state="visible", timeout=timeout)
+                loc.click(timeout=timeout)
+                return sel
+            except Exception:
+                continue
     return None
 
 
@@ -288,10 +311,11 @@ def wait_logged_in(page, cfg, minutes=20):
 
 
 def ensure_login(page, cfg):
-    page.goto(cfg["base_url"], wait_until="domcontentloaded", timeout=60000)
-    time.sleep(4)
+    goto_with_guard(page, cfg["base_url"], cfg=cfg, log=log, settle_sec=3)
     if _no_login_button(page):
         return True
+    # 有弹窗挡着的话，"登录"按钮也可能被盖住导致误判未登录
+    dismiss_popups(page, cfg=cfg, log=log)
     # 未登录：自动轮询等待用户在浏览器里登录，无需在黑窗口按回车
     print("\n" + "=" * 60)
     print("检测到还未登录。请在刚打开的浏览器窗口里完成登录（微信/手机号都行）。")
@@ -316,14 +340,15 @@ def do_one_task(page, context, cfg, task, sniffer):
     for r in range(rounds):
         need = min(per_round, want - len(all_saved))
         log(f"\n--- 第 {r+1}/{rounds} 轮（这轮要 {need} 首）---")
-        page.goto(cfg["base_url"], wait_until="domcontentloaded", timeout=60000)
-        time.sleep(5)
+        # 每次进页面都先清一遍弹窗：活动公告/引导层会盖住输入框和生成按钮
+        goto_with_guard(page, cfg["base_url"], cfg=cfg, log=log, settle_sec=4)
 
         sel = cfg["selectors"]
+        dismiss_popups(page, cfg=cfg, log=log)
 
         # 纯音乐开关
         if instrumental:
-            hit = try_click(page, sel["instrumental_toggle"])
+            hit = try_click(page, sel["instrumental_toggle"], cfg=cfg)
             log(f"  纯音乐开关：{hit or '未找到'}")
             time.sleep(0.8)
         else:
@@ -358,7 +383,9 @@ def do_one_task(page, context, cfg, task, sniffer):
         sniffer.reset()
         # 先记下已有的作品 id，稍后用「新出现的 id」判断这首歌生成好了
         known_ids = {m.get("music_id") for m in fetch_history(page, cfg)}
-        hit = try_click(page, sel["generate_button"], timeout=5000)
+        # 生成按钮是整条流水线的咽喉：点不中这首歌就彻底没了，所以点之前再清一次弹窗
+        dismiss_popups(page, cfg=cfg, log=log)
+        hit = try_click(page, sel["generate_button"], cfg=cfg, timeout=5000)
         if not hit:
             log("  ✗ 找不到「生成」按钮，跳过这首歌")
             continue
@@ -484,11 +511,14 @@ def main():
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         sniffer = Sniffer()
         page.on("response", sniffer.on_response)
+        # 挂弹窗守卫：原生 alert/confirm 不处理会让页面一直挂起；
+        # window.open 开的新窗口（授权页等）也会自动带上守卫。
+        guard_context(ctx, log=log)
 
         try:
             if args.login:
                 log("正在打开登录页面...")
-                page.goto(cfg["base_url"], wait_until="domcontentloaded", timeout=60000)
+                goto_with_guard(page, cfg["base_url"], cfg=cfg, log=log, settle_sec=2)
                 print("\n" + "=" * 60)
                 print("请在刚打开的浏览器窗口里完成登录（微信/手机号都行）。")
                 print("登录成功后脚本会自动继续，不需要回到黑窗口按任何键。")

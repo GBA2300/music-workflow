@@ -30,6 +30,18 @@
     "auto_generate": true
   },
 
+  "_popup_guard说明": "弹窗守卫：网站会不定时弹浮层（活动公告/新功能引导/会员推广/额度提醒），盖住按钮后就点不动了，流程直接断在这一步。守卫会自动关掉它们：先点 × 关闭按钮，点不到再点「我知道了」这类文字按钮，都点不到就铲掉挡路的整屏遮罩再重试。原生 alert 弹窗也会被记录到日志（便于排查），但 Playwright 本身会自动关闭它，通常不会卡住。绝大多数情况保持下面缺省值即可；万一遇到关不掉的弹窗，把它的选择器加进 close_selectors 最前面。",
+  "popup_guard": {
+    "enabled": true,
+    "close_selectors": [],
+    "dismiss_text_selectors": [],
+    "allow_text_buttons": true,
+    "max_rounds": 3,
+    "press_escape": true,
+    "force_remove_blocking_mask": true,
+    "dismiss_after_goto_ms": 1500
+  },
+
   "_selectors说明": "每一项都是一个候选列表，脚本从上往下依次尝试，第一个能找到的就用。页面改版后把新的选择器加在最前面即可，不用改代码。这些是 2026-08 实测的。",
   "selectors": {
     "model_picker": [
