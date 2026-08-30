@@ -125,6 +125,8 @@ music-workflow/
 │   ├── login_check.py     登录诊断/登录工具：反自动化检测 + 弹窗捕获 + 自动截图 + 自动判定成功
 │   ├── probe_generate.py  生成探针：点生成后全程截图 + 记录后台请求，查「等不到歌」用
 │   ├── inspect_buttons.py 按钮探测器：列出页面所有可见按钮的属性，查按钮 selector 用
+│   ├── popup_guard.py     弹窗守卫：自动关掉挡路浮层（× → 文字按钮 → Esc → 铲整屏遮罩）
+│   ├── test_popup_guard.py 弹窗守卫自检：真起 chromium 构造三种弹窗，14 项验证
 │   ├── browser_utils.py   跨平台浏览器清理（Windows taskkill / macOS·Linux pkill）
 │   ├── config.json        平台 URL、选择器、封面参数（页面改版只改这里）
 │   ├── tasks.csv          歌单模板（用户改成自己的歌）

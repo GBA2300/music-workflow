@@ -13,6 +13,8 @@ music-workflow —— 一键初始化工作目录
     probe_generate.py     生成探针（查「点生成后等不到歌」）
     inspect_buttons.py    按钮探测器（查按钮 selector 该怎么写）
     browser_utils.py      跨平台浏览器清理（Windows/macOS/Linux 通用）
+    popup_guard.py        弹窗守卫（自动关掉挡路浮层；被上面两个主脚本 import）
+    test_popup_guard.py   弹窗守卫自检（真起浏览器跑 14 项）
     config.json          平台 URL、选择器、封面参数
     tasks.csv            歌单模板（改这里写你自己的歌）
     requirements.txt     playwright, pillow
@@ -38,6 +40,11 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # 需要复制进工作目录的文件（脚本 + 配置 + 模板）
+#
+# ⚠️ 新增任何「被 generate.py / fanqie_upload.py import 的模块」时，必须同步加进这里。
+#    漏了不会在仓库里报错（本目录有全套文件），但用户 init 出来的工作目录会缺文件，
+#    一运行就 ImportError —— 而且报错发生在别人的电脑上，很难排查。
+#    popup_guard.py 就是这么被漏掉过一次。
 COPY_FILES = [
     "generate.py",
     "cover.py",
@@ -47,6 +54,8 @@ COPY_FILES = [
     "probe_generate.py",
     "inspect_buttons.py",
     "browser_utils.py",
+    "popup_guard.py",
+    "test_popup_guard.py",
     "config.json",
     "tasks.csv",
     "requirements.txt",

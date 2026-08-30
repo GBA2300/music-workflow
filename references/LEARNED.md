@@ -54,6 +54,26 @@
 
 ---
 
+## 2026-08-30 · 分发环节 · 新增模块忘了加进 init_workdir 的复制清单
+
+- **现象**：给 generate.py / fanqie_upload.py 加了 `import popup_guard`，
+  在仓库目录里跑得好好的，但用户 `init_workdir.py` 新建的工作目录里**没有** popup_guard.py，
+  一运行就 `ModuleNotFoundError`。
+- **根因**：`init_workdir.py` 靠 `COPY_FILES` 列表决定复制哪些文件。
+  新增一个**被 import 的模块**时，这个列表不会自动更新，也不会有任何报错——
+  因为仓库目录本身文件是齐的，**只有在别人电脑 / 干净目录里才会炸**。
+- **解法**：`COPY_FILES` 加上 `popup_guard.py` 和 `test_popup_guard.py`，
+  并在列表上方写了醒目注释，说明"新增被 import 的模块必须同步加进这里"。
+- **验证**：真跑 `python init_workdir.py <临时目录>`，再**切到那个目录**里跑
+  `generate.py --help` / `fanqie_upload.py --help` / `test_popup_guard.py`，全部通过。
+- **来源**：自己 debug（写完新模块后想到要验证分发链路，一试果然漏了）
+
+> **教训**：**凡是"加了一个文件"的改动，都要问一句"它需要跟着分发吗"。**
+> 验证方式是真的 `init` 一个干净目录再跑一遍，而不是在源目录里看它能不能启动——
+> 源目录永远缺不了文件，这类 bug 在那里根本露不出来。
+
+---
+
 ## 2026-08-30 · MiniMax 生成环节 · 点了生成却永远等不到歌
 
 - **现象**：脚本点完生成，等 7 分钟都拿不到音频链接，最后超时。
