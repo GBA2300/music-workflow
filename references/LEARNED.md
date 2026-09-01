@@ -472,3 +472,62 @@
 - **教训**：**浏览器自动化里"点到了"≠"生效了"**。凡是"点击触发异步任务"的动作，
   点完必须**反向验证结果真的产生**（轮询接口/看状态指示），验证失败就处理弹窗/重试，
   绝不能"点完就盲等"。这是纪律 2 的核心：卡点不是"点不到"，而是"点了没反应"。
+
+---
+
+## 2026-09-01 · 番茄第三步 · 合同签署按钮被遮挡点不到（a3cc6d6 没覆盖到）
+
+- **现象**：用户最后一步需要签电子合同时反馈「页面展示不完整，右下角签署按钮被遮挡、
+  点击不了，展示页面能不能适应我的视角窗口」。脚本已经把合同页打开了，但按钮点不动。
+- **根因**（a3cc6d6 的盲区）：之前那版只解决了**番茄上传页**跟随窗口（`--start-maximized` +
+  `viewport=None`），但**第三方的电子签合同页**有三个 a3cc6d6 完全没考虑的问题：
+  1. **合同页是「跳转授权」后新开的标签**，脚本没把它 `bring_to_front()`，用户看着的是番茄页
+     以为"页面没反应"——其实合同页在背后开着。
+  2. **合同页常被 fixed 浮层盖住**：下载APP 横条、cookie 同意条、扫码关注等都是
+     `position:fixed; bottom:0; right:0`，正好压在右下角的「确认签署」按钮上方。
+  3. **a3cc6d6 的 `scroll_into_view_if_needed()` 只滚了"跳转授权/确认签署"等脚本自己点的按钮**，
+     真正需要用户手动点的「确认签署」（第三方电子签平台，文案常是「签署 / 签字 / 提交」）
+     没人帮它滚出可视区。
+- **解法**（`fanqie_upload.py` 新增 3 个函数 + 2 处接入点）：
+  1. **`fit_window_to_screen(page)`** — 启动后取 `window.screen.availWidth/availHeight`
+     显式 `set_viewport_size`，把窗口 resize 到铺满屏幕。即使 `--start-maximized` + `viewport=None`
+     也兜底一层（150% DPI 下偶尔窗口没填满）。
+  2. **`dismiss_cover_overlays(page)`** — 遍历 DOM，命中 `position: fixed/absolute` 且
+     文本含「下载/APP/小程序/扫码/cookie/引导/广告」等关键词的浮层 → `display:none`。
+     严格不动正文内容。
+  3. **`ensure_sign_clickable(cpage, log)`**（★ 核心）：
+     - `cpage.bring_to_front()` — 合同标签送最前；
+     - 调 `dismiss_cover_overlays`；
+     - 强制 `html/body { overflow:auto }` 确保可滚；
+     - 找 `签署/确认签署/签字/提交…` 类按钮，`scrollIntoView({block:'center'})` 滚到正中；
+     - **精确移除「盖在按钮中心」的元素**（`elementFromPoint(btn中心)` → 向上找最近的
+       `fixed/absolute` 父级 → `display:none`），返回处理结果（`ok / dismissed / covered-by-static`）；
+     - 截图 `_fanqie_contract.png` 供肉眼核对右下角按钮是否在可视区、能否点到。
+  4. 接入点：① `--login` 和主流程两处 `launch_persistent_context` 之后调
+     `await fit_window_to_screen(page)`；② `step3_sign_contract` 拿到 `cpage` 之后
+     `await ensure_sign_clickable(cpage, log)`。
+- **验证**（真页面 + 模拟页面双保险）：
+  - **模拟页**（`scripts/verify_sign_view.py`）：写一段本地 HTML 复现"右下角签署按钮被
+    fixed「下载App」浮层盖住"，复用 `fanqie_upload.ensure_sign_clickable` 跑同样的修复逻辑。
+    运行结果：
+    ```
+    修复前 按钮中心命中元素 : cover     （被遮挡）
+    修复后 按钮中心命中元素 : signbtn   （可点）
+    按钮实际可点击        : True
+    ✅ 验证通过：遮挡已清除，右下角签署按钮可点击。
+    ```
+    截图 `_verify_before.png` / `_verify_after.png` 肉眼可看出黑色「下载App」条消失、
+    红色「确认签署」按钮出现在右下角。
+  - **真页面**（下次你跑第三步时）：脚本到这一步会**自动**跑这套修复 + 截图
+    `_fanqie_contract.png`，如果按钮被挡，处理结果会打在日志里
+    （`✓ 定位到签署按钮「签署」（遮挡处理：dismissed:DIV）`）。
+- **来源**：用户实测反馈（第三步最后签合同时按钮点不到）+ 自己写 `verify_sign_view.py`
+  复现 + 跑通后再部署到线上
+
+> **教训（叠加 a3cc6d6）**：
+> ① 修"页面不跟随窗口"类 bug，**只修主流程页面不够**，要追到**所有用户要手动操作的页面**
+> （含第三方新开标签）才算修完。a3cc6d6 解决"上传页"，但忽略了"合同页"。
+> ② 浮层遮按钮是**行为层问题**，用 `elementFromPoint(按钮中心)` 看实际命中谁最可靠，
+> 比"加 z-index 兜底"或"调 selector 顺序"都准。
+> ③ **截图是验证的硬证据**。给人看 before/after 截图（不只是日志）才能让"遮挡"这种
+> 视觉问题有可复核的产物。`verify_sign_view.py` 就是把"我修了"变成"你能看到我修了"。

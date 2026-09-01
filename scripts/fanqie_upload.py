@@ -699,6 +699,8 @@ async def step2_auth(page):
     await page.wait_for_selector(
         "button.arco-btn-primary:has-text('确认签署')", timeout=10000
     )
+    # 先滚到可见再点（窗口可能比页面矮，按钮在底部时不被裁掉/点不到）
+    await page.locator("button.arco-btn-primary:has-text('确认签署')").first.scroll_into_view_if_needed()
     await page.locator("button.arco-btn-primary:has-text('确认签署')").click()
     await page.wait_for_timeout(2000)
     log("    ✓ 第二步确认签署完成")
@@ -728,6 +730,129 @@ async def find_contract_page(ctx, fallback_page):
         if "fanqie" not in u:
             return pg
     return fallback_page
+
+
+# ─────────────────────────────────────────────────────────────
+# 解决用户反馈：「签署时右下角按钮被遮挡 / 页面展示不完整 / 点不到」
+#   a3cc6d6 只解决了【番茄上传页】跟随窗口，但第三方电子签合同页常常会新开标签、
+#   顶部被 cookie/下载App 浮层盖住、按钮在折叠区外，a3cc6d6 没覆盖这一步。
+#   这里补齐：窗口显式铺满屏幕 + 合同标签送最前 + 清浮层 + 滚按钮到正中 +
+#   精确移除「盖在按钮中心」的 fixed/absolute 元素 + 截图供你核对。
+# ─────────────────────────────────────────────────────────────
+async def fit_window_to_screen(page):
+    """把浏览器窗口尺寸设为用户真实屏幕（逻辑分辨率），让页面真正「适应视角窗口」。
+
+    a3cc6d6 已加 viewport=None + --start-maximized，但 150% DPI 缩放下偶尔窗口
+    没填满、内容被裁切。这里显式 set_viewport_size 到 screen.avail*，把窗口
+    resize 到铺满屏幕，从根上避免「页面展示不完整、按钮在可视区外」。"""
+    try:
+        scr = await page.evaluate("({w: window.screen.availWidth, h: window.screen.availHeight})")
+        w, h = int(scr.get("w", 0)), int(scr.get("h", 0))
+        if w > 0 and h > 0:
+            await page.set_viewport_size({"width": w, "height": h})
+            log(f"    ✓ 窗口已适配屏幕：{w}×{h}（逻辑分辨率，含 150% DPI 缩放）")
+    except Exception as e:
+        log(f"    (窗口适配屏幕失败，沿用 --start-maximized: {e})")
+
+
+async def dismiss_cover_overlays(page):
+    """关闭/隐藏可能遮挡底部按钮的浮层（下载 APP 横条、cookie 条、新手引导蒙层等）。
+    仅在「定位为 fixed/absolute 且文本像浮层」时才隐藏，绝不动正文内容。"""
+    try:
+        await page.evaluate("""() => {
+            const KW = ['下载','APP','app','小程序','扫码','新手','引导','guide',
+                        'cookie','Cookie','同意并使用','立即体验','打开App','广告'];
+            document.querySelectorAll('*').forEach(el => {
+                const cs = getComputedStyle(el);
+                if (cs.position !== 'fixed' && cs.position !== 'absolute') return;
+                const t = (el.innerText||'') + ' ' + (el.className||'') + ' ' + (el.id||'');
+                if (KW.some(k => t.includes(k))) el.style.display = 'none';
+            });
+        }""")
+    except Exception as e:
+        log(f"    (关闭浮层时出错: {e})")
+
+
+# 第三方电子签平台里常见的「签署」类按钮文案
+CONTRACT_SIGN_TEXTS = [
+    "签署", "确认签署", "提交签署", "签字", "完成签署",
+    "去签署", "确认并提交", "提交", "确认",
+]
+
+
+async def ensure_sign_clickable(cpage, log):
+    """★ 解决用户「右下角签署按钮被遮挡、点不到」的核心函数：
+       1) 把合同标签送到最前（否则你看着的是番茄页，合同页在背后）
+       2) 清掉遮挡浮层（下载 APP 横条 / cookie 条 / 引导蒙层）
+       3) 让页面可滚动、把签署按钮滚入可视区并居中
+       4) 精确移除「盖在按钮中心」的元素（fixed/absolute 浮层）
+       5) 截图 _fanqie_contract.png 供你核对按钮是否可见、能否点到
+    返回 True 表示定位到并清出了签署按钮。"""
+    try:
+        await cpage.bring_to_front()
+    except Exception:
+        pass
+    await asyncio.sleep(0.4)
+    await dismiss_cover_overlays(cpage)
+    try:
+        await cpage.evaluate(
+            "() => { document.documentElement.style.overflow='auto';"
+            " document.body.style.overflow='auto'; }")
+    except Exception:
+        pass
+
+    found = False
+    for txt in CONTRACT_SIGN_TEXTS:
+        try:
+            loc = cpage.locator(
+                f"button:has-text('{txt}'), a:has-text('{txt}'),"
+                f" [role='button']:has-text('{txt}')")
+            if await loc.count() == 0:
+                continue
+            el = loc.first
+            await el.scroll_into_view_if_needed()
+            await asyncio.sleep(0.3)
+            # 先把按钮滚到视口正中，再精确移除盖在按钮中心的元素
+            res = await cpage.evaluate("""(sel) => {
+                const btns = [...document.querySelectorAll('button,a,[role=button]')].filter(b=>{
+                    const t=(b.innerText||'').trim();
+                    return t && t.includes(sel) && t.length<=10;
+                });
+                if(!btns.length) return 'no-btn';
+                const b=btns[0];
+                b.scrollIntoView({block:'center', inline:'center'});
+                const r=b.getBoundingClientRect();
+                if(r.width===0) return 'btn-hidden';
+                const cx=r.left+r.width/2, cy=r.top+r.height/2;
+                const top=document.elementFromPoint(cx,cy);
+                if(!top) return 'no-top';
+                if(b.contains(top)||top.contains(b)) return 'ok';
+                let el=top;
+                while(el && el!==document.body){
+                    const cs=getComputedStyle(el);
+                    if(cs.position==='fixed'||cs.position==='absolute'){
+                        el.style.display='none'; return 'dismissed:'+ (el.tagName||'');
+                    }
+                    el=el.parentElement;
+                }
+                return 'covered-by-static';
+            }""", txt)
+            log(f"    ✓ 定位到签署按钮「{txt}」（遮挡处理：{res}）")
+            found = True
+            break
+        except Exception as e:
+            log(f"    (处理「{txt}」按钮时出错: {e})")
+            continue
+
+    if not found:
+        log("    · 未提前定位到签署按钮（可能要你先填完表单/打勾才出现）；已截图，请自行核对右下角")
+
+    try:
+        await cpage.screenshot(path=os.path.join(ROOT, "_fanqie_contract.png"))
+        log("    ✓ 合同页截图已保存 _fanqie_contract.png（看右下角按钮是否在可视区、能否点到）")
+    except Exception as e:
+        log(f"    (合同页截图失败: {e})")
+    return found
 
 
 async def click_jump_authorize(page):
@@ -792,6 +917,10 @@ async def step3_sign_contract(page, ctx, folders=None):
         log(f"    · 合同页地址：{(cpage.url or '')[:120]}")
     except Exception:
         pass
+
+    # ★ 关键修复：把合同页送最前 + 清掉遮挡浮层 + 让签署按钮进入可视区并截图，
+    #   解决用户「右下角按钮被遮挡、点不到」的问题（详见 ensure_sign_clickable）。
+    await ensure_sign_clickable(cpage, log)
 
     log("=" * 66)
     log("    👉 请在浏览器里完成【电子合同签署】（短信验证码等需你本人操作）。")
@@ -881,6 +1010,7 @@ async def main():
                 str(PROFILE), headless=False, args=["--start-maximized"],
                 viewport=None)   # 页面跟随窗口大小，不同设备自适应
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await fit_window_to_screen(page)   # 窗口显式铺满屏幕（150% DPI 也能填满）
             await a_guard_context(ctx, log=log)
             await a_goto_with_guard(page, UPLOAD_URL, log=log, settle_sec=2)
             ok = await _wait_for_upload_page(page, minutes=20)
@@ -920,6 +1050,7 @@ async def main():
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(20000)
+        await fit_window_to_screen(page)   # 窗口显式铺满屏幕（150% DPI 也能填满）
         # 挂弹窗守卫：番茄上传页同样会弹公告/引导层，原生 alert 不处理会直接卡死
         await a_guard_context(ctx, log=log)
 

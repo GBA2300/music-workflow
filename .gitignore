@@ -28,10 +28,14 @@ _fanqie_log.txt
 _probe_records.json
 probe_report.json
 _fanqie_*.png
+_fanqie_contract.png
 _login_shot.png
 _probe_shot*.png
 _probe_shots/
 _fanqie_card*.png
+_verify_*.png
+_contract_sim.html
+_verify_profile/
 
 # 编辑器 / 系统
 .vscode/

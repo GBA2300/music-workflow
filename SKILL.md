@@ -286,8 +286,17 @@ cd <工作目录>
   屏幕比它小（比如 1280×720 的笔记本）时页面渲染不全，底部按钮被挤出屏幕。
   现在所有脚本统一改为：**有头模式最大化窗口 + 不固定视口**（`--start-maximized` +
   `viewport=None`），页面跟随窗口大小自适应，任何分辨率/DPI 的设备都完整。
+  启动后还会显式 `set_viewport_size(window.screen.availWidth/availHeight)` 兜底
+  （`fit_window_to_screen`，150% DPI 缩放下尤其重要）。
   点击前还会自动滚动到元素可见。**改代码时请沿用 `browser_utils.py` 里的
   `window_args()` / `viewport_for()`，不要再手写固定 viewport。**
+- **「合同签署页右下角按钮被遮挡/点不到」**（2026-09-01 用户实测反馈）：第三方的电子签合同页
+  在「跳转授权」后会新开标签，常被 fixed 的「下载APP/cookie/扫码」浮层盖住右下角的「确认签署」按钮。
+  `fanqie_upload.py` 的 `step3_sign_contract` 拿到合同页后会自动跑 `ensure_sign_clickable(cpage)`：
+  ① 标签送最前 (`bring_to_front`) ② 清掉关键词命中的浮层 (`dismiss_cover_overlays`)
+  ③ 把签署按钮 `scrollIntoView({block:'center'})` 滚到正中
+  ④ 用 `elementFromPoint(按钮中心)` 精确移除「盖在按钮上」的 fixed/absolute 元素
+  ⑤ 截图 `_fanqie_contract.png` 供肉眼核对。复现 + 验证见 `scripts/verify_sign_view.py`（模拟页跑通 before/after 截图）。
 - **「已点生成，但一直等不到歌 / 超时」**：这是最常见的坑，原因和解法：
   1. MiniMax **生成完成后不会刷新页面上的历史列表**，音频链接只在
      `https://www.minimaxi.com/v1/api/music/history_list` 接口里返回。
@@ -395,6 +404,8 @@ cd <工作目录>
 - **绝不要**把 `profile/`、`profile_fanqie/` 打包/发给他人（含登录态）。
 - **绝不要**去找/点「发布」按钮——番茄上传页根本没有这个按钮，正确终点是签电子合同；硬等发布按钮只会空转刷异常（曾卡过一整晚）。
 - **签电子合同必须人工**：需要本人收短信验证码，脚本只负责把合同页送到面前并等待（默认最多 30 分钟）。
+  脚本会**自动**把合同标签送最前、清遮挡浮层、让签署按钮滚到正中并截图
+  （`ensure_sign_clickable` + `_fanqie_contract.png`），不需要你手动调窗口。
 - 番茄要求：音乐类型选【原创】、是否 AI 作品如实勾【是】、签约选【独家授权】。
 
 ## 与 ai-music-factory 的关系（已整合）
