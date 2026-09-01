@@ -160,6 +160,97 @@ def try_click(page, selectors, timeout=2500, cfg=None):
     return None
 
 
+def page_generating(page):
+    """判断 MiniMax 页面当前是否处于「生成中」状态。
+
+    用于点完「创作」按钮后反向验证任务是否真的建立了——
+    光靠 try_click 返回成功不可靠（老 bug：点到了但任务没建）。
+    这里直接读页面可见文字，命中以下任一即认为已开始：
+    """
+    _BUSY = ["生成中", "排队中", "正在生成", "生成任务", "创作中",
+             "等待生成", "生成队列", "生成中…", "请稍候", "正在创作"]
+    try:
+        txt = page.evaluate(
+            "() => (document.body && document.body.innerText) ? document.body.innerText : ''"
+        )
+    except Exception:
+        return False
+    for kw in _BUSY:
+        if kw in txt:
+            return True
+    return False
+
+
+def try_confirm_modal(page, cfg, log=None):
+    """点掉二次确认弹窗里的正向确认按钮。
+
+    MiniMax 点「创作」后偶尔会弹一个确认框（确认生成/去生成/立即生成…）。
+    如果脚本只点主按钮不处理它，生成任务就永远建不起来（静默白点的根因之一）。
+
+    只点白名单文案的按钮，绝不点「取消/关闭/以后/放弃/暂不」等撤销类按钮。
+    """
+    if log is None:
+        log = globals().get("log", print)
+    _CONFIRM_TEXTS = ["确认生成", "去生成", "立即生成", "确认", "确定",
+                      "继续", "开始", "创建", "生成", "提交"]
+    _CONFIRM_AVOID = ["取消", "关闭", "以后", "放弃", "暂不", "暂不生成"]
+    try:
+        dialogs = page.locator(
+            "dialog, [role='dialog'], .modal, .dialog, "
+            "[class*='modal'], [class*='Dialog']"
+        )
+        # 先在本对话框（标准容器）里找正向按钮
+        if dialogs.count() > 0:
+            for d_i in range(dialogs.count()):
+                box = dialogs.nth(d_i).bounding_box()
+                if not box:
+                    continue
+                btns = dialogs.nth(d_i).locator("button, [role='button'], a")
+                best = None
+                for j in range(btns.count()):
+                    try:
+                        t = (btns.nth(j).inner_text() or "").strip()
+                    except Exception:
+                        continue
+                    if any(a in t for a in _CONFIRM_AVOID):
+                        continue
+                    if any(c in t for c in _CONFIRM_TEXTS):
+                        best = btns.nth(j)
+                        break
+                if best is not None:
+                    try:
+                        best.click(timeout=3000)
+                        log("  ✓ 已点掉确认弹窗（对话框内）")
+                        return True
+                    except Exception:
+                        pass
+            return False
+        # 没有标准对话框容器：退而求其次，在可见按钮里找白名单文案
+        candidates = page.locator("button:visible, [role='button']:visible, a:visible")
+        for i in range(candidates.count()):
+            try:
+                t = (candidates.nth(i).inner_text() or "").strip()
+            except Exception:
+                continue
+            if any(a in t for a in _CONFIRM_AVOID):
+                continue
+            if any(c in t for c in _CONFIRM_TEXTS):
+                try:
+                    candidates.nth(i).click(timeout=3000)
+                    log("  ✓ 已点掉确认弹窗（可见按钮）")
+                    return True
+                except Exception:
+                    pass
+                break
+        return False
+    except Exception as e:
+        try:
+            log(f"  ⚠ try_confirm_modal 异常：{e}")
+        except Exception:
+            pass
+        return False
+
+
 def try_set_contenteditable(page, sel, text, timeout=3000):
     """为 contenteditable div 写内容"""
     try:
@@ -256,57 +347,20 @@ def set_generate_quantity(page, cfg, want, log=None):
     # ① 主路径：靠「数量」值所在的纯数字 span 定位 stepper 容器
     #    （之前用「数量」标签往上找第一个含≥2按钮的祖先，会误命中整块输入区的大容器，
     #      导致 btns[0] 变成「参考音乐上传」之类的按钮，点减号根本没作用）
-    # 关键修复：必须用「数量」标签锚定到正确的 stepper。
-    # 旧逻辑只找"纯数字 span + 父容器有2个按钮"，会误命中页面上其他数字控件
-    # （比如某处标签数字），点了减号但真正的数量没变——日志却报"已设为1"。
-    # 新逻辑：先找含"数量"文字的标签，再从它旁边定位数字 span + 减/加按钮。
     JS_FIND = """() => {
-        // ① 先找「数量」标签（兼容 "数量：" / "数量:" / "数量" 等写法）
-        let qtyLabel = null;
-        for (const el of document.querySelectorAll('span, div, label, p')) {
-            const t = (el.textContent || '').trim();
-            if (/^数量\\s*[:：]?$/.test(t)) { qtyLabel = el; break; }
+        const nums = [...document.querySelectorAll('span')]
+            .filter(s => /^\\d+$/.test((s.textContent||'').trim()));
+        // 优先：父容器恰好 2 个按钮（最贴合「减/加」stepper）
+        for (const s of nums) {
+            const par = s.parentElement;
+            if (par && par.querySelectorAll('button').length === 2) return par;
         }
-        if (!qtyLabel) {
-            // 兜底：页面可能改了标签文字，用旧逻辑找"数字 span + 2 按钮"
-            const nums = [...document.querySelectorAll('span')]
-                .filter(s => /^\\d+$/.test((s.textContent||'').trim()));
-            for (const s of nums) {
-                const par = s.parentElement;
-                if (par && par.querySelectorAll('button').length === 2) return par;
-            }
-            for (const s of nums) {
-                const par = s.parentElement;
-                if (par && par.querySelectorAll('button').length >= 2) return par;
-            }
-            return null;
+        // 兜底：父容器 >=2 个按钮
+        for (const s of nums) {
+            const par = s.parentElement;
+            if (par && par.querySelectorAll('button').length >= 2) return par;
         }
-        // ② 从标签的父/兄弟容器里找数字 span（stepper 的当前值）
-        const walk = (el, depth) => {
-            if (depth > 3) return null;
-            // 检查自身及所有后代
-            const spans = el.querySelectorAll('span');
-            for (const s of spans) {
-                if (/^\\d+$/.test((s.textContent || '').trim())) {
-                    const par = s.parentElement;
-                    if (par && par.querySelectorAll('button').length >= 2) return par;
-                }
-            }
-            // 检查父容器
-            if (el.parentElement) return walk(el.parentElement, depth + 1);
-            // 检查下一个兄弟
-            if (el.nextElementSibling) {
-                const sibSpans = el.nextElementSibling.querySelectorAll('span');
-                for (const s of sibSpans) {
-                    if (/^\\d+$/.test((s.textContent || '').trim())) {
-                        const par = s.parentElement;
-                        if (par && par.querySelectorAll('button').length >= 2) return par;
-                    }
-                }
-            }
-            return null;
-        };
-        return walk(qtyLabel, 0);
+        return null;
     }"""
     try:
         handle = page.evaluate_handle(JS_FIND)
@@ -654,6 +708,42 @@ def do_one_task(page, context, cfg, task, sniffer):
         if not hit:
             log("  ✗ 找不到「生成」按钮，跳过这首歌")
             continue
+
+        # ★ 关键验证：点到「创作」按钮 ≠ MiniMax 真建了生成任务。
+        # 旧逻辑"点完就盲等 15 分钟"会静默白点（第二首就踩到：点到了但任务没建）。
+        # 改成「点完 → 验证任务真建立 → 没建立就点确认弹窗再点一次」的回路。
+        started = False
+        for attempt in range(4):
+            if page_generating(page):
+                started = True
+                log("  ✓ 页面显示「生成中」，生成任务已建立")
+                break
+            new_work = None
+            for m in fetch_history(page, cfg):
+                mid = m.get("music_id")
+                if not mid or mid in known_ids:
+                    continue
+                if (title and m.get("title") == title) or (prompt and m.get("idea") == prompt):
+                    new_work = m
+                    break
+            if new_work:
+                started = True
+                log(f"  ✓ 新作品已产生（验证）：{new_work.get('title')}（music_id={new_work.get('music_id')}）")
+                break
+            if attempt < 3:
+                log(f"  ⚠ 第{attempt+1}次点生成后未见任务建立，处理确认弹窗并重试…")
+                try_confirm_modal(page, cfg, log)
+                time.sleep(2)
+                try_click(page, sel["generate_button"], cfg=cfg, timeout=5000)
+                time.sleep(5)
+        if not started:
+            try:
+                page.screenshot(path=str(ROOT / "debug_generate.png"), full_page=False)
+            except Exception:
+                pass
+            log("  ✗ 点生成后任务未建立（可能需人工处理确认/验证弹窗；已截图 debug_generate.png），跳过这首歌")
+            continue
+
         log("  ✓ 已点生成，等待出歌（通常 1-3 分钟，量大时请耐心等）...")
 
         # 主动轮询 MiniMax 的「历史作品」接口取结果。
@@ -753,8 +843,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
-    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
-    profile = user_profile(cfg["profile_dir"])
+    profile = ROOT / cfg["profile_dir"]
     profile.mkdir(exist_ok=True)
 
     tasks = load_tasks(cfg)
