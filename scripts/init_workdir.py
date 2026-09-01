@@ -20,11 +20,12 @@ music-workflow —— 一键初始化工作目录
     requirements.txt     playwright, pillow
     library/             曲库（初始为空）
     lyrics/              歌词 txt（初始为空）
-    profile/             MiniMax 登录态（初始为空，首次 --login 自建）
-    profile_fanqie/      番茄登录态（初始为空，首次 --login 自建）
     published.json       已发布记录（初始 {}，防止重复发布）
 
-★ 安全：绝不复制任何人的登录态。profile*/ 永远初始为空，由各人自己登录。
+★ 隐私红线：登录态（Cookie/凭证）绝不放在本工作目录或 skill 文件夹内。
+  它存在「系统每用户私有目录」%LOCALAPPDATA%/music-workflow/profiles/，
+  由 scripts/paths.py 的 user_profile() 解析。因此拷贝/分发本工作目录或 skill
+  都不会带走任何人的账号——每个人第一次运行时自己登录自己的。
 
 用法：
     python init_workdir.py                 # 在当前目录新建 ./music-workflow/
@@ -63,7 +64,7 @@ COPY_FILES = [
 ]
 
 # 需要创建的空目录
-MAKE_DIRS = ["library", "lyrics", "profile", "profile_fanqie"]
+MAKE_DIRS = ["library", "lyrics"]
 
 
 def check_deps():
@@ -81,7 +82,7 @@ def check_deps():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="music-workflow 一键初始化工作目录（多账号通用，不含任何登录态）")
+    ap = argparse.ArgumentParser(description="music-workflow 一键初始化工作目录（多账号通用；登录态存每用户私有目录，绝不随本目录分发）")
     ap.add_argument("workdir", nargs="?", default="music-workflow",
                     help="工作目录路径（默认当前目录下的 ./music-workflow）")
     ap.add_argument("--check", action="store_true",

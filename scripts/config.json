@@ -104,6 +104,7 @@
       "button.ant-switch.custom-switch"
     ],
     "generate_button": [
+      "button:has-text('创作')",
       "button:has-text('限时免费')",
       "button:has-text('一键音乐')",
       "button:has-text('生成音乐')",

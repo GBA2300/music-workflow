@@ -18,8 +18,8 @@ MiniMax 网页端生成音乐 → 自动下载 → 自动生成 1440×1440 封�
 | # | 环节 | 谁做 | 频率 | 说明 |
 |---|---|---|---|---|
 | 1 | 安装依赖 | 🧑 人 | **一次性** | `pip install` + `playwright install chromium`，约 2 分钟 |
-| 2 | 首次登录 MiniMax | 🧑 人 | **一次性** | 扫码 / 账号密码登录。**登录态存本地 `profile/`**，之后长期自动免登 |
-| 3 | 首次登录番茄 | 🧑 人 | **一次性** | 同上，登录态存本地 `profile_fanqie/` |
+| 2 | 首次登录 MiniMax | 🧑 人 | **一次性** | 扫码 / 账号密码登录。**登录态存系统每用户私有目录 `%LOCALAPPDATA%/music-workflow/profiles/profile`（由 `scripts/paths.py` 解析，绝不在 skill 内）**，之后长期自动免登 |
+| 3 | 首次登录番茄 | 🧑 人 | **一次性** | 同上，登录态存 `%LOCALAPPDATA%/music-workflow/profiles/profile_fanqie` |
 | 4 | 写歌单和歌词 | 🧑 人 | 每批歌 | 这是创作部分，当然得你来（`tasks.csv` + `lyrics/*.txt`） |
 | 5 | **签署电子合同** | 🧑 人 | **每批一次** | 需你本人收**短信验证码**完成签署。**签完 = 发布成功** |
 | — | 生成音乐 / 下载 / 做封面 | 🤖 全自动 | — | 点生成、等转码、取名、存库、出封面 |
@@ -70,7 +70,8 @@ python scripts/init_workdir.py D:/my-music
 cd D:/my-music
 ```
 
-会生成一套**完全干净**的目录：脚本、配置、空的曲库 / 歌词目录、**空的登录态目录**。
+会生成一套**完全干净**的目录：脚本、配置、空的曲库 / 歌词目录。登录态**不在这里**，
+而存在你系统每用户私有目录 `%LOCALAPPDATA%/music-workflow/profiles/`（每用户独立、不在 skill 内）。
 每个人的工作目录互相独立，互不干扰。
 
 ### 3. 登录两个平台（各一次，之后全自动）
@@ -80,7 +81,9 @@ python generate.py --login        # 浏览器打开，用你的账号登录 Mini
 python fanqie_upload.py --login   # 浏览器打开，用你的账号登录 番茄
 ```
 
-登录成功、看到对应页面后脚本会自动退出，登录态保存在你的 `profile/` 和 `profile_fanqie/`。
+登录成功、看到对应页面后脚本会自动退出，登录态保存在你系统每用户私有目录
+`%LOCALAPPDATA%/music-workflow/profiles/profile` 与 `.../profile_fanqie`
+（不在 skill 文件夹内，因此拷贝 skill 不会带走你的账号）。
 
 > 若遇到「点了登录没反应 / 弹窗一闪就消失」，那是平台风控识别了自动化浏览器：
 > ```bash
@@ -195,11 +198,13 @@ python inspect_buttons.py     # 列出页面所有可见按钮的文字/位置�
 
 ## 隐私与安全
 
-- ✅ 仓库里**不含任何人的账号、手机号、Cookie、登录态**。`profile/` 与 `profile_fanqie/`
-  在工作目录里**初始为空**，由使用者自己登录生成。
-- ✅ 脚本不含任何硬编码的个人数据，路径全部相对当前工作目录。
-- ⚠️ **请勿把你的 `profile/`、`profile_fanqie/`、`published.json` 上传到任何公开仓库**——
-  那等于把你的登录凭证交出去。仓库自带的 `.gitignore` 已帮你排除，直接提 issue/PR 是安全的。
+- ✅ 仓库里**不含任何人的账号、手机号、Cookie、登录态**——登录态本就存在你系统每用户私有目录
+  `%LOCALAPPDATA%/music-workflow/profiles/`（Windows）/ `$XDG_CACHE_HOME/music-workflow/profiles/`
+  （Linux/macOS），**从不在仓库/skill 内**，由 `scripts/paths.py` 的 `user_profile()` 统一解析。
+  所以拷贝/分发 skill 不会带走任何人的账号，每人第一次运行自己登录自己的。
+- ✅ 脚本不含任何硬编码的个人数据，登录态路径全部由 `user_profile()` 收口（不再写 `ROOT / "profile"`）。
+- ⚠️ 如果你要备份/迁移登录态，只备份上面那个**每用户私有目录**即可，**不要把它塞回 skill 文件夹**；
+  仓库自带的 `.gitignore` 也仍排除 `profile*/`、`storage_state*.json`，作为双重保险。
 
 ---
 

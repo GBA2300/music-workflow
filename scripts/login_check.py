@@ -183,7 +183,8 @@ def run(target_key: str, minutes: int = 20):
         return 2
 
     t = TARGETS[target_key]
-    profile_dir = ROOT / t["profile"]
+    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+    profile_dir = user_profile(t["profile"])
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     kill_chrome()

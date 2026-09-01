@@ -256,20 +256,57 @@ def set_generate_quantity(page, cfg, want, log=None):
     # ① 主路径：靠「数量」值所在的纯数字 span 定位 stepper 容器
     #    （之前用「数量」标签往上找第一个含≥2按钮的祖先，会误命中整块输入区的大容器，
     #      导致 btns[0] 变成「参考音乐上传」之类的按钮，点减号根本没作用）
+    # 关键修复：必须用「数量」标签锚定到正确的 stepper。
+    # 旧逻辑只找"纯数字 span + 父容器有2个按钮"，会误命中页面上其他数字控件
+    # （比如某处标签数字），点了减号但真正的数量没变——日志却报"已设为1"。
+    # 新逻辑：先找含"数量"文字的标签，再从它旁边定位数字 span + 减/加按钮。
     JS_FIND = """() => {
-        const nums = [...document.querySelectorAll('span')]
-            .filter(s => /^\\d+$/.test((s.textContent||'').trim()));
-        // 优先：父容器恰好 2 个按钮（最贴合「减/加」stepper）
-        for (const s of nums) {
-            const par = s.parentElement;
-            if (par && par.querySelectorAll('button').length === 2) return par;
+        // ① 先找「数量」标签（兼容 "数量：" / "数量:" / "数量" 等写法）
+        let qtyLabel = null;
+        for (const el of document.querySelectorAll('span, div, label, p')) {
+            const t = (el.textContent || '').trim();
+            if (/^数量\\s*[:：]?$/.test(t)) { qtyLabel = el; break; }
         }
-        // 兜底：父容器 >=2 个按钮
-        for (const s of nums) {
-            const par = s.parentElement;
-            if (par && par.querySelectorAll('button').length >= 2) return par;
+        if (!qtyLabel) {
+            // 兜底：页面可能改了标签文字，用旧逻辑找"数字 span + 2 按钮"
+            const nums = [...document.querySelectorAll('span')]
+                .filter(s => /^\\d+$/.test((s.textContent||'').trim()));
+            for (const s of nums) {
+                const par = s.parentElement;
+                if (par && par.querySelectorAll('button').length === 2) return par;
+            }
+            for (const s of nums) {
+                const par = s.parentElement;
+                if (par && par.querySelectorAll('button').length >= 2) return par;
+            }
+            return null;
         }
-        return null;
+        // ② 从标签的父/兄弟容器里找数字 span（stepper 的当前值）
+        const walk = (el, depth) => {
+            if (depth > 3) return null;
+            // 检查自身及所有后代
+            const spans = el.querySelectorAll('span');
+            for (const s of spans) {
+                if (/^\\d+$/.test((s.textContent || '').trim())) {
+                    const par = s.parentElement;
+                    if (par && par.querySelectorAll('button').length >= 2) return par;
+                }
+            }
+            // 检查父容器
+            if (el.parentElement) return walk(el.parentElement, depth + 1);
+            // 检查下一个兄弟
+            if (el.nextElementSibling) {
+                const sibSpans = el.nextElementSibling.querySelectorAll('span');
+                for (const s of sibSpans) {
+                    if (/^\\d+$/.test((s.textContent || '').trim())) {
+                        const par = s.parentElement;
+                        if (par && par.querySelectorAll('button').length >= 2) return par;
+                    }
+                }
+            }
+            return null;
+        };
+        return walk(qtyLabel, 0);
     }"""
     try:
         handle = page.evaluate_handle(JS_FIND)
@@ -716,7 +753,8 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
-    profile = ROOT / cfg["profile_dir"]
+    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+    profile = user_profile(cfg["profile_dir"])
     profile.mkdir(exist_ok=True)
 
     tasks = load_tasks(cfg)

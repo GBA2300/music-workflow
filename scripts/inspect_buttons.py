@@ -53,7 +53,8 @@ def main():
         print(f"读 config.json 失败: {e}")
         return 1
 
-    profile_dir = ROOT / cfg.get("profile_dir", "profile")
+    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+    profile_dir = user_profile(cfg.get("profile_dir", "profile"))
     # 跨平台清理残留浏览器（Windows/macOS/Linux 通用）
     try:
         from browser_utils import cleanup

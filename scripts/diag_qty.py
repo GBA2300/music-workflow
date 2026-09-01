@@ -16,7 +16,8 @@ from generate import (load_config, ROOT, window_args, viewport_for,
                       goto_with_guard, guard_context)
 
 cfg = load_config()
-profile = ROOT / cfg["profile_dir"]
+from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+profile = user_profile(cfg["profile_dir"])
 profile.mkdir(exist_ok=True)
 
 with sync_playwright() as p:

@@ -47,11 +47,12 @@ import time
 from pathlib import Path
 
 from playwright.async_api import async_playwright
+from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
 
 ROOT = Path(__file__).resolve().parent          # 脚本所在目录 = 工作目录（所有数据都落在这里）
 LIB_ROOT = ROOT / "library"
 UPLOAD_URL = "https://www.novelfm.com/creator/music/finished/ugc/uploadProduct"
-PROFILE = ROOT / "profile_fanqie"                # 本机专属登录态：首次运行自动创建（空），绝不打包进 skill
+PROFILE = user_profile("profile_fanqie")         # 每用户私有登录态（%LOCALAPPDATA%/music-workflow/profiles/），绝不在 skill 内
 
 import sys as _sys                                # noqa: E402
 _sys.path.insert(0, str(ROOT))                    # noqa: E402

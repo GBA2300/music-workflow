@@ -158,7 +158,8 @@ def main():
     except Exception:
         pass
 
-    profile_dir = ROOT / cfg.get("profile_dir", "profile")
+    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+    profile_dir = user_profile(cfg.get("profile_dir", "profile"))
     for n in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         try:
             fp = profile_dir / n

@@ -531,3 +531,77 @@
 > 比"加 z-index 兜底"或"调 selector 顺序"都准。
 > ③ **截图是验证的硬证据**。给人看 before/after 截图（不只是日志）才能让"遮挡"这种
 > 视觉问题有可复核的产物。`verify_sign_view.py` 就是把"我修了"变成"你能看到我修了"。
+
+---
+
+## 2026-09-01 · 登录态隐私红线（skill 多人共用，绝不能泄露个人账号）
+
+**现象**：用户明确提醒——这个 skill 是给很多人用的，每人各自登录自己的账号，
+**不能泄露任何人的登录信息**。
+
+**根因（之前埋的雷）**：代码把浏览器登录态写成 `PROFILE = ROOT / "profile_fanqie"`，
+也就是登录态目录 `scripts/profile_fanqie/`（77M 真实 Cookie/LocalStorage）和 `scripts/profile/`
+（MiniMax，33M）**躺在 skill 文件夹内**。skill 文件夹一旦被拷贝/分发，登录态就跟着泄露。
+（git 侧没问题：`.gitignore` 早就忽略了 `profile*/`，从未提交过历史；但**磁盘上的目录**
+才是真正会被"拷文件夹"带走的隐患。）
+
+**解法（统一收口到 `scripts/paths.py` 的 `user_profile(name)`）**：
+- `user_profile(name)` 返回 `%LOCALAPPDATA%/music-workflow/profiles/<name>`
+  （Windows）/ `$XDG_CACHE_HOME/music-workflow/profiles/<name>`（Linux/macOS），
+  **每用户私有、不在 skill 内**。
+- 全量替换：fanqie_upload(generate/diag_qty/verify_qty/inspect_buttons/login_check/
+  probe_generate/probe_popup 里所有 `ROOT / "profile*"` → `user_profile(...)`。
+- 把磁盘上真实的两个 profile 目录 `shutil.move` 到新位置（**保留用户登录，不要求重登**），
+  并删除验证遗留的合成 `_verify_profile`。
+- `init_workdir.py` 不再建 workdir 里的 `profile/`、`profile_fanqie/`；`verify_sign_view.py`
+  的临时 profile/截图改写到 `tempfile.mkdtemp()`，绝不落 skill 目录。
+- `.gitignore` 保留 `profile*/` 等规则作双重保险。
+
+**验证**：`python -c "import paths; print(paths.user_profile('profile_fanqie'))"` →
+`C:\Users\<你>\AppData\Local\music-workflow\profiles\profile_fanqie`；
+`scripts/` 内已无 `profile*` 目录；全部改动脚本 `py_compile` 通过。
+
+> **教训（隐私/分发）**：
+> ① 凡是"多人共用、会被拷贝分发"的 skill，**用户数据（登录态/作品/手机号）必须存在
+> skill 文件夹之外**。约定俗成写 `ROOT / "xxx"` 是反模式——它把数据直接塞进可分发目录。
+> ② 检查泄露不能只看 git 历史（`git ls-files` 空≠安全），更要看**磁盘上 skill 目录里
+> 有没有真实数据文件**。用户是"拷文件夹"用，不是"clone 干净仓库"用。
+> ③ 登录态这类敏感数据，迁移时优先"移动到每用户私有目录"而非"删了让用户重登"，
+> 既消除泄露面又保住体验。
+> ④ 加一道"改完 grep `ROOT / \"profile` 确认无遗漏"的纪律，防后人回归。
+
+---
+
+## 2026-09-01 · 数量控件改了"别的数字" · set_generate_quantity 静默误命中（第三版修复）
+
+- **现象**：用户截图铁证——页面「数量：2 +」**仍然是 2**，
+  但脚本日志写 `✓ 生成数量已设为 1（原 2）`。结果每首歌词点一次生成出 **2 个版本**
+  （《陪你慢慢变老》×2、《母亲的缝纫机》×2），用户明确要求"一首词出一首"。
+- **根因（比前两版更深）**：
+  `set_generate_quantity()` 的 JS_FIND 用「纯数字 span + 父容器恰好 2 个按钮」定位 stepper。
+  但页面上**不只有一个满足此条件的数字 span**——可能还有其他控件（标签数字、计数器等）
+  也恰好是"数字 span + 父容器有 2 按钮"。脚本**命中了错误的那个**，点了它的减号，
+  读回值确实从 2 变成 1（因为改的就是那个错误控件的值），于是报"已设为 1"——
+  **真正的数量控件纹丝未动**。
+  这是"看起来成功了"的**最阴险形态**：不是报错、不是超时，而是**静默改错了对象还报成功**。
+- **正确解法（锚定「数量」标签）**：
+  JS_FIND 必须先找含 **「数量」** 文字的标签元素（兼容 `数量：` / `数量:` / `数量`），
+  再从这个标签的父/兄弟容器里定位数字 span + 减/加按钮。
+  这样即使页面上有其他"数字+2按钮"的控件也不会被误命中——
+  因为只有**紧挨着「数量」标签的那个**才是真正的 stepper。
+  兜底保留旧逻辑（页面改掉标签文字时降级）。
+- **附带修：生成按钮文案又变了**
+  按钮探测显示按钮文本现在是 `600\n创作`（额度+换行+"创作"），
+  不再是之前任何一期候选（`限时免费`/`一键音乐`/…）。
+  在 `config.json → generate_button` 列表最前面插入 `button:has-text('创作')`。
+- **验证**：修复后重跑 `generate.py`，日志应显示数量真正从 2→1 且生成按钮匹配到「创作」。
+- **来源**：用户截图反馈「这里显示两首」→ inspect_buttons.py 探测真实按钮 → 定位根因并修复
+
+> **教训（叠加前三轮）**：
+> ① **"纯结构定位"（数字 span + N 个按钮）在复杂页面上必然碰撞**——
+>   页面有多少个"数字+2按钮"的控件，你的选择器就能命中多少个。
+>   **必须用语义锚点（「数量」标签文字）缩小范围**，而不是靠 DOM 结构猜。
+> ② **"日志报成功 ≠ 真的成功"**——尤其涉及"改页面状态"的操作，
+>   必须用**独立方式验证**（读回页面实际显示值 / 截图核对），不能只信自己的读写闭环。
+> ③ **用户截图是最硬的证据**——脚本说"已设为 1"，用户截图显示"仍是 2"，
+>   这类矛盾出现时**永远信用户的眼睛**，脚本的判断可能是基于错误元素的。

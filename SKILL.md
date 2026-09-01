@@ -93,8 +93,8 @@ agent_created: true
 | 环节 | 谁做 | 频率 | 说明 |
 |---|---|---|---|
 | 安装依赖 | 🧑 人 | 一次性 | `pip install -r requirements.txt` + **`playwright install chromium`**（这步最常被漏） |
-| 首次登录 MiniMax | 🧑 人 | 一次性 | `generate.py --login`。登录态存本地 `profile/`，之后长期自动免登（Cookie 一般撑数周~数月，过期重跑一次即可） |
-| 首次登录番茄 | 🧑 人 | 一次性 | `fanqie_upload.py --login`，登录态存 `profile_fanqie/` |
+| 首次登录 MiniMax | 🧑 人 | 一次性 | `generate.py --login`。登录态存**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/profile`（由 `scripts/paths.py` 解析，绝不在 skill 内），之后长期自动免登（Cookie 一般撑数周~数月，过期重跑一次即可） |
+| 首次登录番茄 | 🧑 人 | 一次性 | `fanqie_upload.py --login`，登录态存 `%LOCALAPPDATA%/music-workflow/profiles/profile_fanqie` |
 | 写歌单和歌词 | 🧑 人 | 每批歌 | `tasks.csv` + `lyrics/*.txt`（创作部分，当然得人来） |
 | **签电子合同** | 🧑 人 | 每批一次 | 需本人收**短信验证码**。番茄没有「发布」按钮，**签完 = 发布成功**。脚本开浏览器等你最多 30 分钟 |
 
@@ -104,10 +104,27 @@ agent_created: true
 ## 公开分发（已按 GitHub 开源标准备好）
 
 - `README.md`：仓库入口文档，含「哪些步骤需要人参与」表格、快速开始、排错表、隐私声明。
-- `.gitignore`：**已验证可拦住** `profile/`、`profile_fanqie/`、`published.json`、`library/`、
-  `lyrics/`、日志与截图——防止使用者误把自己的登录凭证提交上去。
+- `.gitignore`：**已验证可拦住** `profile/`、`profile_fanqie/`、`_verify_profile/`、`storage_state*.json`、
+  `published.json`、`library/`、`lyrics/`、日志与截图——防止使用者误把自己的登录凭证提交上去。
+  （登录态现在本就存在每用户私有目录、不在 skill 内；.gitignore 作为双重保险，防回归。）
 - `LICENSE`：MIT。
-- 分发前自检：仓库内不得含手机号/绝对路径/真实歌名/登录态文件（本次已全量扫描确认干净）。
+- 分发前自检：仓库内不得含手机号/绝对路径/真实歌名/登录态文件。登录态现由 `scripts/paths.py` 统一解析到
+  `%LOCALAPPDATA%/music-workflow/profiles/`，**任何脚本都不得再写 `ROOT / "profile"` 这类代码**（已全量替换）。
+  本次已全量扫描确认 skill 目录内无登录态文件。
+
+## 隐私红线（登录态绝不随 skill 分发）
+
+本 skill 给很多人用，每人各自登录自己的账号。最重要的安全约束：
+
+1. **登录态（Cookie / 登录凭证 / LocalStorage）一律存在「系统每用户私有目录」**
+   `%LOCALAPPDATA%/music-workflow/profiles/<name>`（Windows）/ `$XDG_CACHE_HOME/music-workflow/profiles/<name>`
+   （Linux/macOS），由 `scripts/paths.py` 的 `user_profile(name)` 统一解析。
+2. **绝不允许把登录态写在 skill 文件夹内**（旧的 `scripts/profile`、`scripts/profile_fanqie` 已迁移删除）。
+   因为 skill 文件夹会被拷贝、上传、分发——一旦登录态在里面，等于把账号交给别人。
+3. **任何脚本解析登录态目录都必须走 `user_profile()`**，不要再写 `ROOT / "profile"` 之类的代码。
+   改代码前先 grep 一遍 `ROOT / "profile`，确保没有遗漏。
+4. `.gitignore` 仍保留 `profile*/` 等忽略规则作为双重保险，防止有人误把登录态提交。
+5. 手机号、token、绝对路径等个人信息同样不得写进仓库或截图。
 
 ## 文件结构
 
@@ -128,6 +145,7 @@ music-workflow/
 │   ├── popup_guard.py     弹窗守卫：自动关掉挡路浮层（× → 文字按钮 → Esc → 铲整屏遮罩）
 │   ├── test_popup_guard.py 弹窗守卫自检：真起 chromium 构造三种弹窗，14 项验证
 │   ├── browser_utils.py   跨平台浏览器清理（Windows taskkill / macOS·Linux pkill）
+│   ├── paths.py           每用户私有登录态目录解析（防止登录态随 skill 泄露，所有脚本登录态必须走这里）
 │   ├── config.json        平台 URL、选择器、封面参数（页面改版只改这里）
 │   ├── tasks.csv          歌单模板（用户改成自己的歌）
 │   └── requirements.txt   playwright, pillow
@@ -188,7 +206,9 @@ cd <工作目录>
 <python> generate.py --login        # 弹 MiniMax 页，用户登录（自动检测，无需回车）
 <python> fanqie_upload.py --login   # 弹番茄上传页，用户登录，看到「添加歌曲」即成功
 ```
-- 登录态存入 `<工作目录>/profile/` 与 `<工作目录>/profile_fanqie/`。
+- 登录态存入**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/profile` 与 `.../profile_fanqie`
+  （由 `scripts/paths.py` 的 `user_profile()` 解析），绝不在 skill 文件夹或工作目录内——所以拷贝/分发
+  skill 不会带走任何人的账号，每个人第一次运行自己登录自己的。
 - 若用户想在番茄用「自动填号+验证码」：在 `config.json` 加 `"fanqie_phone": "138..."` 或设 `FANQIE_PHONE` 环境变量；否则纯手动登录即可。
 - 之后若登录过期，重跑对应 `login_check.py <平台>` 即可；普通模式运行时若检测到未登录，也会自动打开浏览器等你手动登录。
 - 登录窗口最长等待 20 分钟；若用户的平台账号本来就是已登录状态，脚本会在几十秒内自动判定成功并关闭浏览器（属正常，不是出错）。

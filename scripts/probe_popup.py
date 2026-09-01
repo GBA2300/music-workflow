@@ -137,7 +137,8 @@ def main():
         print("没给 URL，config.json 里也没有 base_url")
         return 1
 
-    profile_dir = ROOT / (args.profile or cfg.get("profile_dir", "profile"))
+    from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+    profile_dir = user_profile(args.profile or cfg.get("profile_dir", "profile"))
 
     g = load_guard_config(cfg)
     roots = g["popup_roots"]

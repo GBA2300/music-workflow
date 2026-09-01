@@ -16,6 +16,7 @@
   python verify_sign_view.py
 """
 import asyncio
+import tempfile
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -23,6 +24,7 @@ from playwright.async_api import async_playwright
 import fanqie_upload as F   # 直接复用线上修复代码
 
 HERE = Path(__file__).resolve().parent
+TMP = Path(tempfile.mkdtemp(prefix="mw_verify_"))  # 临时目录，验证产物不落 skill 目录
 
 # 模拟合同页：长表单 + 右下角签署按钮 + 压住按钮的 fixed 浮层
 HTML = """<!doctype html><html><head><meta charset=utf-8>
@@ -50,13 +52,13 @@ HTML = """<!doctype html><html><head><meta charset=utf-8>
 
 
 async def main():
-    html_path = HERE / "_contract_sim.html"
+    html_path = TMP / "_contract_sim.html"
     html_path.write_text(HTML, encoding="utf-8")
     url = "file://" + html_path.as_posix()
 
     p = await async_playwright().start()
     ctx = await p.chromium.launch_persistent_context(
-        str(HERE / "_verify_profile"), headless=False, args=["--start-maximized"])
+        str(TMP / "profile"), headless=False, args=["--start-maximized"])
     page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     try:
         await F.fit_window_to_screen(page)
@@ -70,7 +72,7 @@ async def main():
             const top=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
             return top ? top.id : 'none';
         }""")
-        await page.screenshot(path=str(HERE / "_verify_before.png"))
+        await page.screenshot(path=str(TMP / "_verify_before.png"))
 
         # —— 跑线上真实修复 ——
         ok = await F.ensure_sign_clickable(page, F.log)
@@ -83,7 +85,7 @@ async def main():
             const top=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
             return top ? top.id : 'none';
         }""")
-        await page.screenshot(path=str(HERE / "_verify_after.png"))
+        await page.screenshot(path=str(TMP / "_verify_after.png"))
 
         # —— 能否真的点？——
         clicked = False
@@ -101,7 +103,7 @@ async def main():
     print(f"修复后 按钮中心命中元素 : {after}    （应为 signbtn = 可点）")
     print(f"ensure_sign_clickable 返回 : {ok}")
     print(f"按钮实际可点击        : {clicked}")
-    print("截图: _verify_before.png / _verify_after.png")
+    print(f"截图: {TMP / '_verify_before.png'} / {TMP / '_verify_after.png'}")
     print("=" * 60)
     if before == "cover" and after == "signbtn" and clicked:
         print("✅ 验证通过：遮挡已清除，右下角签署按钮可点击。")
