@@ -233,22 +233,106 @@ _DEFAULT_QTY_PLUS_SELS = [
 
 
 def set_generate_quantity(page, cfg, want, log=None):
-    """把 MiniMax 页面上的「生成数量」控件改成 want（默认 1）。
+    """把 MiniMax/Hailuo 页面上的「生成数量」改成 want（默认 1）。
 
     背景：MiniMax 页面默认生成数量是 2（点一次生成出两首歌），脚本要按
     quantity_per_round 来控制，必须先把页面数量改过来，否则额度会浪费。
 
-    策略（从快到稳）：
-      1. 直接往数量输入框填值（能填就最省事）
-      2. 填不了就点「减/加」按钮，从当前值一步步走到 want
+    页面形态：Next.js + Tailwind 的自定义 stepper，结构大致是
+        <div ...>                      ← 容器
+          <span>数量:&nbsp;</span>     ← 标签
+          <button><svg/></button>      ← 减（svg 横线图标，无任何 class/aria 提示）
+          <span>2</span>               ← 当前值（数字 span）
+          <button><svg/></button>      ← 加
+        </div>
+    没有 input、没有 aria-label、按钮 class 是通用 flex 类——所以早期按
+    antd/number-input 猜的选择器全匹配不上，函数一直静默失败。
+
+    策略（按稳到快）：
+      ① 用「数量:」标签定位 stepper 容器，点减/加按钮从当前值走到 want（主路径）
+      ② 兜底：config 里的通用 input / 加减按钮选择器（兼容 antd 等其它形态）
     找不到控件就返回 False（不阻塞流程，按页面实际数量继续，日志里会提示）。
     """
+    # ① 主路径：靠「数量」值所在的纯数字 span 定位 stepper 容器
+    #    （之前用「数量」标签往上找第一个含≥2按钮的祖先，会误命中整块输入区的大容器，
+    #      导致 btns[0] 变成「参考音乐上传」之类的按钮，点减号根本没作用）
+    JS_FIND = """() => {
+        const nums = [...document.querySelectorAll('span')]
+            .filter(s => /^\\d+$/.test((s.textContent||'').trim()));
+        // 优先：父容器恰好 2 个按钮（最贴合「减/加」stepper）
+        for (const s of nums) {
+            const par = s.parentElement;
+            if (par && par.querySelectorAll('button').length === 2) return par;
+        }
+        // 兜底：父容器 >=2 个按钮
+        for (const s of nums) {
+            const par = s.parentElement;
+            if (par && par.querySelectorAll('button').length >= 2) return par;
+        }
+        return null;
+    }"""
+    try:
+        handle = page.evaluate_handle(JS_FIND)
+    except Exception:
+        handle = None
+    elc = handle.as_element() if handle else None
+
+    if elc is not None:
+        try:
+            btns = elc.query_selector_all("button")
+            if len(btns) >= 2:
+                minus, plus = btns[0], btns[-1]
+
+                def _read():
+                    v = elc.evaluate("""e => {
+                        const s = [...e.querySelectorAll('span')]
+                            .find(x => /^\\d+$/.test((x.textContent||'').trim()));
+                        return s ? (s.textContent||'').trim() : '';
+                    }""")
+                    try:
+                        return int(v)
+                    except Exception:
+                        return -1
+
+                cur = _read()
+                if cur < 0:
+                    if log:
+                        log("  ⚠ 数量控件读不出当前值，跳过数量设置")
+                    return False
+                if cur == want:
+                    if log:
+                        log(f"  ✓ 生成数量已是 {want}")
+                    return True
+                step = minus if cur > want else plus
+                for _ in range(abs(cur - want)):
+                    try:
+                        # 用原生 .click() 触发 React 合成事件，绕过 Playwright
+                        # 的可点击性/遮罩检查（这类 Tailwind 自定义按钮常被误判为点不到）
+                        step.evaluate("b => b.click()")
+                    except Exception:
+                        try:
+                            step.click(timeout=1000, force=True)
+                        except Exception:
+                            break
+                    time.sleep(0.4)
+                final = _read()
+                if final == want:
+                    if log:
+                        log(f"  ✓ 生成数量已设为 {want}（原 {cur}）")
+                    return True
+                if log:
+                    log(f"  ⚠ 数量未设成 {want}（当前 {final}），按页面实际数量继续")
+                return False
+        except Exception as e:
+            if log:
+                log(f"  ⚠ 自定义 stepper 操作异常: {e}")
+
+    # ② 兜底：config 里的通用选择器（antd / number input 等形态）
     q = (cfg.get("selectors") or {}).get("quantity") or {}
     num_sels = list(q.get("input") or _DEFAULT_QTY_INPUT_SELS)
     minus_sels = list(q.get("minus") or _DEFAULT_QTY_MINUS_SELS)
     plus_sels = list(q.get("plus") or _DEFAULT_QTY_PLUS_SELS)
 
-    # ① 找到数量输入框（可能是 input，也可能是只读的 span/div 显示数字）
     num_loc = None
     for s in num_sels:
         try:
@@ -278,7 +362,6 @@ def set_generate_quantity(page, cfg, want, log=None):
         except Exception:
             return -1
 
-    # ① 先试直接填值
     try:
         tag = num_loc.evaluate("el => el.tagName")
         if tag in ("INPUT", "TEXTAREA"):
@@ -291,7 +374,6 @@ def set_generate_quantity(page, cfg, want, log=None):
     except Exception:
         pass
 
-    # ② 填不了（只读 stepper）→ 点加减按钮从当前值走到 want
     cur = _read_val()
     if cur >= 0 and cur != want:
         step_sels = minus_sels if cur > want else plus_sels

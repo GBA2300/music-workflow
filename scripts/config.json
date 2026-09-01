@@ -68,7 +68,7 @@
     "lyrics_input": [
       "div[contenteditable='true']"
     ],
-    "_quantity说明": "生成数量控件的选择器。MiniMax 默认数量是 2，脚本在点生成前会把数量改成本轮要生成的数字（默认 1）。如果页面改版后数量没被改过来，把新的选择器加到这里最前面。",
+    "_quantity说明": "兜底选择器（仅当页面是 antd InputNumber / 数字 input 形态时用）。当前 MiniMax 音乐页是 Next.js+Tailwind 自定义 stepper，主路径不靠这里，而是用「纯数字 span → 父容器恰好 2 按钮」定位（见 generate.py 的 set_generate_quantity）。只有页面改版成 antd/数字框时才需要改这里。",
     "quantity": {
       "input": [
         "input[type='number']",

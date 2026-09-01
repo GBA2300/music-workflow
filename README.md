@@ -145,7 +145,7 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | 想重发已发过的 | 删掉 `published.json` 里对应记录 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
 | **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
-| **点一次生成却出了两首歌** | 已修复：MiniMax 页面默认数量是 2，脚本点生成前会自动改成 1（`quantity_per_round`）。想一次多首就把它调大 |
+| **点一次生成却出了两首歌** | 已修复：MiniMax 数量是 Tailwind 自定义 stepper（非 antd/数字框），脚本点生成前用「纯数字 span → 父容器恰好 2 按钮」定位它、点减号改成 1（`quantity_per_round`）。想一次多首就把它调大 |
 
 <details>
 <summary><b>关于弹窗：脚本是怎么自动处理的</b></summary>
