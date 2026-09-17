@@ -155,8 +155,9 @@ def main():
         cleanup(profile_dir)
     except Exception:
         try:
-            subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
-                           capture_output=True, timeout=10)
+            # ★ 2026-09-12：不要 taskkill /f /im chrome.exe（会误杀用户自己的 Chrome）
+            from browser_utils import kill_browsers
+            kill_browsers()
         except Exception:
             pass
         for n in ("SingletonLock", "SingletonCookie", "SingletonSocket"):

@@ -115,19 +115,23 @@ def log(msg):
 
 
 def kill_chrome():
-    """清掉残留 chrome，避免 profile 被锁住打不开。跨平台（Windows/macOS/Linux）。"""
+    """★ 2026-09-12 修正：**绝不能** taskkill /f /im chrome.exe。
+
+    原因：Playwright 用的是独立 profile 目录，但进程名同样是 chrome.exe。
+    一刀切杀所有 chrome.exe 会**连带杀掉用户自己正在用的浏览器**
+    （用户已实测被误杀过一次）。这里只做两件安全的事：
+      ① 让 browser_utils 按「本工具的 profile 路径」精确收尾；
+      ② 清掉 profile 里的锁文件。
+    剩下的事交给 clear_profile_locks —— 锁清掉后新实例就能正常打开。
+    """
     try:
         from browser_utils import kill_browsers
         if kill_browsers():
             return
     except Exception:
         pass
-    # 兜底：Windows 原生命令
-    try:
-        subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
-                       capture_output=True, timeout=10)
-    except Exception:
-        pass
+    # 兜底：什么都不杀。锁文件由 unlock_profile() 处理。
+    print("[提示] 未执行任何浏览器进程清理（避免误杀用户自己的 Chrome）", flush=True)
 
 
 def unlock_profile(profile_dir: Path):

@@ -843,8 +843,12 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config()
-    profile = ROOT / cfg["profile_dir"]
-    profile.mkdir(exist_ok=True)
+    # ★ 登录态存「每用户私有目录」，绝不在 skill / 工作目录内。
+    #   原因见 paths.py：skill 文件夹会被拷贝分发，登录态躺在里面 = 把账号交给别人。
+    #   （2026-09-17 修复：本文件此前漏改，仍用 ROOT/cfg["profile_dir"]，
+    #    导致改了私有目录后 generate.py 反而读不到登录态、一直报「未登录」。）
+    from paths import user_profile  # noqa: E402
+    profile = user_profile(cfg.get("profile_dir", "profile"))
 
     tasks = load_tasks(cfg)
     log(f"任务表共 {len(tasks)} 条")

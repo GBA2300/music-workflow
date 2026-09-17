@@ -24,6 +24,14 @@ STEALTH_ARGS = [
     "--no-default-browser-check",
     "--disable-infobars",
     "--lang=zh-CN",
+    # ⚠️ 2026-09-12（用户指出 + 实测）：脚本启动前会 taskkill /f 强杀上一轮浏览器，
+    #    Chromium 因此认为"上次非正常退出"，下次启动会弹一个**白色的「是否恢复页面」弹窗**。
+    #    它盖在页面上，会把右上角按钮（如编辑器「导出」）的点击吃掉 →
+    #    表现为"点了导出没反应、弹窗不出来"。下面这些参数把崩溃恢复气泡/报错弹窗压掉：
+    "--hide-crash-restore-bubble",
+    "--disable-session-crashed-bubble",
+    "--noerrdialogs",
+    "--disable-features=InfiniteSessionRestore",
 ]
 
 
@@ -68,27 +76,106 @@ def scroll_into_view(page, locator, timeout=1500):
         return False
 
 
-def kill_browsers(verbose=False):
-    """关掉残留的 Chromium/Chrome/Edge 进程。返回是否执行成功（失败也不抛异常）。"""
-    system = platform.system()
-    ok = False
-    for name in PROCESS_NAMES:
+def _win_list_procs():
+    """列出 [(pid, exe完整路径)]。纯 ctypes 实现。
+
+    ★ 为什么不用 wmic / tasklist：
+      用户环境里这些系统工具被安全策略禁用，且 wmic 在新版 Windows 已移除。
+      ctypes 调 kernel32 的进程快照最稳、零依赖。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    out = []
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == INVALID_HANDLE_VALUE:
+            return out
         try:
-            if system == "Windows":
-                cmd = ["taskkill", "/f", "/im", name]
-            else:  # Darwin(macOS) / Linux
-                cmd = ["pkill", "-f", name]
-            r = subprocess.run(cmd, capture_output=True, timeout=10)
-            if r.returncode == 0:
-                ok = True
-        except FileNotFoundError:
-            # 该平台没有这个命令（比如 macOS 上跑 taskkill），直接跳过
-            break
+            pe = PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not k32.Process32FirstW(snap, ctypes.byref(pe)):
+                return out
+            while True:
+                pid = int(pe.th32ProcessID)
+                path = ""
+                try:
+                    h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                    if h:
+                        buf = ctypes.create_unicode_buffer(2048)
+                        size = wintypes.DWORD(2048)
+                        if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                            path = buf.value
+                        k32.CloseHandle(h)
+                except Exception:
+                    pass
+                out.append((pid, path))
+                if not k32.Process32NextW(snap, ctypes.byref(pe)):
+                    break
+        finally:
+            k32.CloseHandle(snap)
+    except Exception:
+        pass
+    return out
+
+
+def kill_browsers(verbose=False):
+    """★ 2026-09-12 用户明确指出并实测过一次事故 —— 这里原来是一刀切：
+
+        taskkill /f /im chrome.exe      # ← 会连用户**自己正在用的 Chrome** 一起杀掉！
+
+    事故经过：脚本清理残留进程时把用户本人的 Chrome 全杀了（用户当场发现）。
+    根因：Playwright 拉起的浏览器进程名也叫 chrome.exe，光看进程名分不清敌我。
+
+    现在改为**按可执行文件路径精确匹配**：只杀 exe 路径里带 ms-playwright 的，
+    也就是只有本工具自己拉起来的那些 Playwright Chromium。
+    用户自己的 Chrome 在 C:\\Program Files\\Google\\Chrome\\... ，绝不会被碰。
+
+    返回 True 表示至少杀掉了 1 个（调用方据此决定是否再清锁文件）。
+    """
+    if platform.system() != "Windows":
+        # 非 Windows 不做进程清理：靠正常退出 + clear_profile_locks 兜底，
+        # 绝不 pkill 全杀用户浏览器。
+        return False
+
+    killed = []
+    for pid, path in _win_list_procs():
+        lp = (path or "").lower().replace("/", "\\")
+        if not lp:
+            continue
+        if not (lp.endswith("\\chrome.exe") or lp.endswith("\\chromium.exe")):
+            continue
+        if "ms-playwright" not in lp:
+            continue                      # 不是本工具的浏览器 → 放过
+        try:
+            subprocess.run(["taskkill", "/f", "/pid", str(pid)],
+                           capture_output=True, timeout=10)
+            killed.append(pid)
         except Exception:
             continue
-    if verbose and ok:
-        print("· 已清理残留浏览器进程")
-    return ok
+
+    if verbose and killed:
+        print(f"· 已清理 {len(killed)} 个本工具的 Playwright 浏览器进程")
+    return bool(killed)
 
 
 def clear_profile_locks(profile_dir):

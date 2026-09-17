@@ -152,9 +152,11 @@ def main():
         if p.exists():
             lyrics = p.read_text(encoding="utf-8").strip()
 
+    # ★ 2026-09-12：**不要** taskkill /f /im chrome.exe —— 会误杀用户自己的 Chrome。
+    #   改为调用 browser_utils.kill_browsers()，它只杀 exe 路径带 ms-playwright 的进程。
     try:
-        subprocess.run(["taskkill", "/f", "/im", "chrome.exe"],
-                       capture_output=True, timeout=10)
+        from browser_utils import kill_browsers
+        kill_browsers()
     except Exception:
         pass
 

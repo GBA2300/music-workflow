@@ -20,6 +20,235 @@
 
 ---
 
+## 2026-09-12 · 番茄上传 · 「审核中」被自己误当成「误判」，差点撤掉正确的发布记录
+
+- **现象**：自动跑完，脚本在 19:04:27 点「跳转授权」→ 19:04:30 新开电子签标签 →
+  **19:06:31 检测到「签署完成」→ 写入 published.json（4 首）**。
+  但当时我（AI）看 19:06:32 的截图 `_fanqie_final.png`，番茄页上还挂着
+  「已跳转签约页 / 请前往签约页完成授权签署」+「跳转授权」按钮，
+  且从开标签到判定成功只隔 2 分钟 —— 于是**我判断这是误判**，
+  准备把这 4 条从 published.json 撤掉。
+- **根因**：
+  1. **我对那张截图的理解错了**：番茄的「已跳转签约页」是**跳转后的静态占位页**，
+     它**不会**因为你在别处签完了而消失或变化 —— 它根本不是「签署状态指示器」。
+     拿它当「还没签」的证据，是把「跳转提示」误读成了「状态」。
+  2. 我怀疑「2 分钟太快」也不成立：用户当天上午已签过一次，电子牵登录态还在，
+     签名/签章也已保存，第二批复用只需点「签署」+ 填一个短信验证码，2 分钟完全够。
+- **解法**：**没有撤**。改成去番茄后台**只读核对**（新增第 6 步）：
+  `scripts/verify_published.py` 打开 `https://www.novelfm.com/creator/music/finished/ugc`
+  （左侧「作品管理 → 成品发行」）逐条核对，结果：
+  ```
+  ✓ 心宽路就宽            [审核中] ID 7684602153347845144  创建 2026-09-12 19:01
+  ✓ 心宽路就宽（动听版）      [审核中] ID 7684602153352039448  创建 2026-09-12 19:01
+  ✓ 好日子咱一起走          [审核中] ID 7684602153356250136  创建 2026-09-12 19:01
+  ✓ 好日子咱一起走（动听版）    [审核中] ID 7684602153360444440  创建 2026-09-12 19:01
+  结果：4/4 在后台列表里
+  ```
+  → 确认真的是发布成功了。
+- **验证**：用户 2026-09-12 明确确认「这个是发布后的审核阶段，实际上已经发布成功了的」。
+  往期对照：`回家喊一声妈` 16:54 创建 → 17:10 上架；`越过越有奔头` 17:15 创建 → 17:31/17:38 上架，
+  即 **「审核中」→「已上架」约 16~25 分钟**。
+- **教训（比 bug 本身更重要）**：
+  - **「怀疑误判」不能靠读截图猜，要靠去后台查事实。** 我差点因为一次误读
+    把 4 首已发布的歌从 published.json 里删掉 → 下次运行会**重传一遍变成重复作品**。
+  - **修 bug 之前先证伪自己的结论。** 当时我已备份 published.json 准备撤，
+    好在先跑了核对脚本。**「宁可漏判也不要误判」这条纪律反过来也成立：
+    宁可多花 2 分钟核对，也不要在没证据时改动正确的数据。**
+- **来源**：自己 debug + 用户确认
+
+---
+
+## 2026-09-12 · 番茄上传 · 判断「签署页开没开」不能用正文文字，要用 URL；否则会重复开签署页
+
+- **现象**：用户反馈（原话）：「**跳转成功就可以了，不需要重复跳新开多个页面，
+  只需要打开一个签署页面就可以了。**」——实际多开了一个签署页。
+- **根因**：两层叠加 ——
+  1. `click_jump_authorize` 判「到没到电子签页」看的是**正文里的特征词**
+     （`电子牵/letsign/选择签章/意愿认证/文件签署`），但 `contract.feishu.cn/h5/sign/signLink`
+     这种 h5 页**正文里根本没有这些词**（慢加载 + 文案不同）→ 永远判成「还没到」；
+  2. `step3_sign_contract` 里有个兜底逻辑：`if not esign_seen:` 就每 30 秒补点一次
+     「跳转授权」。由于条件①永远为真，**它每 30 秒就点一次** → 多开一堆签署页。
+     日志实证：19:05:00 `· 番茄页仍有「跳转授权」，已替你补点一次`。
+- **解法**（`scripts/fanqie_upload.py`）：
+  - 新增 `SIGN_URL_MARKS` / `is_sign_page()` / `sign_pages(ctx)` —— **一律用 URL 判断**
+    签署页是否已打开（`contract.feishu.cn`、`letsign.com`、`sign/signLink`、`esign`、`/sign`）；
+  - `click_jump_authorize`：点完「跳转授权」后**先等最多 20 秒**看页面开没开，
+    开出来就立刻 `return`；只有**确认没开出来**才允许再点，`MAX_CLICKS` 从 4 降到 **2**；
+  - `step3_sign_contract`：兜底补点改为 `MAX_NUDGES = 1`（全程最多 1 次），
+    且**只要已有签署页就绝不补点**；
+  - 新增 `dedupe_sign_tabs(ctx)` —— 万一真多开了，**自动关掉多余的，只留第一个**。
+- **验证**：编译通过；`is_sign_page` 对本次真实 URL
+  `https://contract.feishu.cn/h5/sign/signLink?url=https://s.letsign.com/MNjMedLjJqQ/` 判定为 True。
+- **来源**：用户反馈
+
+---
+
+## 2026-09-12 · 番茄上传 · `find_contract_page` 把番茄页当成「非番茄页」，导致截图/置顶/滚按钮全作用错对象
+
+- **现象**：日志里出现 `· 合同页地址：https://www.novelfm.com/creator/music/finished/ugc/uploadProduct`
+  ——它明明就是番茄自己的上传页，却被当成了「合同页」。于是
+  「把合同页送最前 + 清浮层 + 把签署按钮滚到可视区 + 截图」**全都作用在番茄页上**，
+  电子签标签反而没被处理，用户看到的是「按钮还是点不到」。
+- **根因**：`find_contract_page` 判断非番茄页用的是 `if "fanqie" not in u: return pg`，
+  但**番茄创作中心的域名是 `www.novelfm.com`，不含 "fanqie" 字样** → 番茄页自己满分通过，
+  又被排在 `ctx.pages` 第一位，于是被优先返回。
+- **解法**（`scripts/fanqie_upload.py`）：
+  - 新增 `FANQIE_HOST_MARKS = ("fanqie","novelfm","bytedance","douyin","snssdk")`
+    与 `_is_fanqie_url()`，把 novelfm 等一并算作番茄自家域名；
+  - `find_contract_page` 改为**先按 `sign_pages(ctx)` 的 URL 特征认签署页**，
+    认不出再退回「非番茄域名的第一个标签」。
+- **验证**：修复后核对脚本能正确定位并输出后台作品列表。
+- **来源**：自己 debug（读日志时发现 URL 不对）
+
+---
+
+## 2026-09-12 · 全仓库 · 「清理残留浏览器」按进程名一刀切，误杀用户自己的 Chrome
+
+- **现象**：用户发现**自己正在用的 Chrome 被脚本杀掉了**。用户原话指出这是危险操作并要求修掉。
+- **根因**：`browser_utils.kill_browsers()` 的实现是
+  `for name in PROCESS_NAMES: taskkill /f /im <name>`，而
+  `PROCESS_NAMES = ["chrome","chrome.exe","chromium",...,"msedge.exe",...]`。
+  Playwright 拉起的浏览器**进程名也叫 chrome.exe**（它是 Chromium 内核），
+  所以「按名字杀」等于「把用户所有 Chrome 一起杀」。
+  同一个危险写法还散落在 `login_check.py` / `inspect_buttons.py` /
+  `probe_generate.py` / `probe_popup.py` 四处兜底分支里。
+- **解法**（全仓库统一）：
+  - `browser_utils._win_list_procs()` —— 用 **ctypes 调 kernel32**
+    （`CreateToolhelp32Snapshot` + `Process32FirstW/NextW` + `OpenProcess` +
+    `QueryFullProcessImageNameW`）枚举 `(pid, exe完整路径)`。
+    用 ctypes 而不是 `wmic`/`tasklist`，因为**用户环境里这些系统工具被安全策略禁用**
+    （实测 `wmic` 返回空），且 wmic 在新版 Windows 已移除。
+  - `kill_browsers()` 改为**只杀 exe 路径里含 `ms-playwright` 的 chrome.exe**，
+    即只有本工具自己拉起的 Playwright Chromium（装在
+    `%LOCALAPPDATA%\ms-playwright\chromium-*\chrome-win\chrome.exe`）；
+    用户自己的 Chrome 在 `C:\Program Files\Google\Chrome\...`，**绝不会被碰**。
+  - 非 Windows 平台直接 `return False`，**不做任何 pkill 全杀**，
+    靠正常退出 + `clear_profile_locks` 兜底。
+  - 四个脚本里的 `taskkill /f /im chrome.exe` 兜底分支全部替换为
+    `from browser_utils import kill_browsers; kill_browsers()`。
+- **验证**：实跑 `_win_list_procs()` 枚举到 332 个进程，其中 12 个
+  `C:\Program Files\Google\Chrome\Application\chrome.exe` **全部被正确标记为「不会碰」**，
+  `kill_browsers()` 返回 `False`（当前没有 Playwright 浏览器残留）。
+- **来源**：用户反馈
+
+---
+
+## 2026-09-12 · 番茄上传 · 「跳转授权」是两段式的，点一次就 return 会卡死在中间页
+
+- **现象**：全自动跑到「确认签署」后一切正常，合同生成完（约 3 分 22 秒）出现「跳转授权」，
+  脚本点了一次，然后日志就停在「等待你完成签署…」——而浏览器里页面是
+  「**已跳转签约页 / 请前往签约页完成授权签署**」+ **又一颗橙色的「跳转授权」按钮**，
+  没人点它，流程干等 30 分钟。
+- **根因**：番茄的「跳转授权」是**两段式**的：
+  1. 合同生成完 → 出现第一颗「跳转授权」
+  2. 点掉它 → 页面变成上面那个提示页，**又出现第二颗「跳转授权」**
+  3. **必须再点第二颗**，才会真正打开电子签页（番茄 → `contract.feishu.cn` 飞书合同
+     → `www.letsign.com` **电子牵**）
+  旧 `click_jump_authorize()` 每找到按钮 → 点击 → **立刻 `return`**，所以卡在第 2 步。
+  另外用户实测指出：合同生成后**有时会自动新开标签**跳走，**不自动跳时才需要点「跳转授权」**，
+  所以两种路径都必须兜住。
+- **解法**（`scripts/fanqie_upload.py`）：
+  - `click_jump_authorize(page, ctx)` 重写为**轮询式**，成功条件三者任一：
+    ① `ctx.pages` 变多（自动新开标签）② 任意标签页正文含电子签特征词
+    （`电子牵/letsign/选择签章/意愿认证/文件签署`）③ 点到「跳转授权」类按钮
+  - **点完不 return**，`continue` 回循环继续看；最多点 `MAX_CLICKS = 4` 次防连点开一堆标签
+  - 合同生成等待 `360s → 900s`（实测要 3.5 分钟以上，原来太紧）
+  - `step3_sign_contract` 的 30 分钟签署等待里加**兜底补点**：约每 30 秒检查一次，
+    番茄页还挂着「跳转授权」就替用户点一下，别让流程干等
+- **验证**：用户在自动跑到「已跳转签约页」后手动补点第二颗 → 电子牵签署 → **发布成功**。
+  改后逻辑与用户口述的两种路径完全对齐。
+- **来源**：自己 debug（日志+截图定位）+ 用户手动操作后回传（"除非不跳转，就要点击跳转授权"）
+
+---
+
+## 2026-09-12 · 番茄上传 · 登录等待 15 分钟卡在边缘，把成功等丢了
+
+- **现象**：`fanqie_upload.py` 报「未检测到登录态，需要登录」→ 等 15m15s →「登录等待超时，关闭」。
+  但用户说「我登陆了」，且 `profile_fanqie` 确实在超时前 1 分钟被写入过。
+- **根因**：两件事叠加。
+  ① 默认等待上限只有 **15 分钟**，而用户 16:36 才登录成功、脚本 16:36:58 放弃 —— 差一分钟。
+     手动登录（扫码 / 等短信）超过 15 分钟很常见。
+  ② 判定「已登录」用的是 `text=添加歌曲`，但**空上传页那个大虚线框的真实文案是
+     「点击添加歌曲」**（+ 图标 + 文字），部分渲染时机匹配不到。
+- **解法**：`_wait_for_upload_page` 默认 **15 → 30 分钟**，每 30 秒打一次「还在等（已等 X 分钟）」；
+  新增 `_on_upload_page()` 多特征判定：`text=点击添加歌曲` / `text=添加歌曲` /
+  `text=上传歌曲信息` / `#songs_0_songFile`，命中任一即算已进入上传页。
+  `add_song_card` 也补了 `text=点击添加歌曲` 候选。
+- **验证**：改后重跑，17:14:27 **秒识别已登录**，不再有任何等待。
+- **来源**：自己 debug + 实际重跑验证
+
+---
+
+## 2026-09-12 · 番茄上传 · 不要用 taskkill /f /im chrome.exe 做「清理残留浏览器」
+
+- **现象**：`fanqie_upload.py` 的 `main()` 开头调 `browser_utils.cleanup()`，
+  而 `cleanup()` 会 `taskkill /f /im chrome.exe`（Windows）。
+- **根因**：这条命令**不分青红皂白杀掉所有叫 chrome 的进程**，包括
+  **用户自己正在用的 Chrome 窗口** —— 用户正在看的东西会瞬间全没。
+  它原本的目的是解锁 `profile_fanqie`，但杀掉全世界的 Chrome 来解锁一个 profile 完全不值。
+- **解法**：`main()` 里改成**只删 profile 目录的 `Singleton*` 锁文件**
+  （`browser_utils.clear_profile_locks(PROFILE)`），**不碰任何进程**。
+  万一真有别的浏览器占着这个 profile，Playwright 启动时会报错，那时再单独处理。
+- **验证**：改后多次跑，profile 每次都能正常获取与释放；用户自己的 Chrome 未受影响。
+- **来源**：自己发现（写学习录制器时意识到同样风险）
+
+---
+
+## 2026-09-12 · 学习录制器 · 多标签页共用同一组事件文件名，空数据覆盖掉真实记录
+
+- **现象**：用 `fanqie_learn.py` 录了 395 步，`step_*.json` 快照都在，
+  但 `clicks.json` / `inputs.json` / `files.json` **全是空的** ——
+  用户明明手动点了上传、选了文件，却一条都没录到。
+- **根因**：录制器每轮把「每次点击/输入/选文件」写成**同一组文件名**，
+  而抓取对象是 `ctx.pages[-1]`（最后一个标签页）。
+  用户走到「跳转授权」时会**新开一个电子签标签**，新标签没有注入记录脚本 →
+  读出空数组 → **把之前番茄页辛苦录到的真实数据整组覆盖成 0**。
+- **解法**：`_dump_events()` 改成**按标签页分文件**（`events_<序号>_<域名>_clicks.json` 等），
+  谁也覆盖不了谁；抓取循环改成**遍历所有标签页**（不只最后一个），
+  每页分别落 `step_*.json`；快照探针也补了 `containers` 段
+  （原先只抓 input/button，**漏了带 id 的容器 div**，而 `songs_0_songFile` 这类恰好是容器）。
+- **验证**：本次靠 395 张表单快照完整还原了整条流程（事件文件丢失不影响快照）。
+  新命名与遍历逻辑已固化，下次录制不会再丢。
+- **来源**：自己 debug（对比 `step_*.json` 有数据、`clicks.json` 为空，反推出覆盖）
+
+---
+
+## 2026-09-12 · 学习录制器 · 手动选文件时系统对话框不弹出（Playwright 拦掉了）
+
+- **现象**：让用户手动走一遍上传流程时，点「上传音频/歌词/封面」后
+  **系统的选文件窗口根本不弹**，看着像页面卡住了。
+- **根因**：Playwright 默认会拦截 `input[type=file]` 的原生文件对话框
+  （改用 `setFiles` 注入文件），所以人工在真实浏览器里点上传时对话框被吞掉了。
+- **解法**：录制器启动后立刻通过 CDP 关掉拦截：
+  `Page.setInterceptFileChooserDialog` `{enabled: false}`
+  （已实测该 CDP 命令在当前 Chromium 上可用）。选中的文件名仍会被页面内注入的
+  `change` 监听器记录，不依赖 Playwright 的 `filechooser` 事件。
+- **验证**：用户随后手动选文件正常弹出窗口，流程顺利走完。
+- **来源**：预先规避（写录制器时就识别出该风险）+ 实测 CDP 命令可用性
+
+---
+
+## 2026-09-12 · 番茄上传 · 上传页是 Arco Design，不是 Semi UI
+
+- **现象**：写选择器时容易惯性套 `semi-*`（妙响那套）。
+- **根因**：番茄创作平台前端用的是 **Arco Design**：
+  按钮 `arco-btn arco-btn-primary`、下拉 `arco-select`、选项 `li.arco-select-option`、
+  弹窗 `.arco-modal-wrapper .arco-modal-footer`、标签输入 `arco-input-tag`。
+  上传容器的 class 还带哈希（`upload-input-container-Xm4c1M`），
+  **必须用 `[class*='upload-input-container']` 前缀匹配**，不能写死全名。
+- **解法**：选择器一律用 `arco-*` 或在 SKILL.md 记为「Arco 体系」；
+  实测确认上传区 id 全部仍在：`songs_N_songFile` / `_lyricFile` / `_name_input` /
+  `_lyricist_id_list` / `_composer_id_list` / `_producers` / `_singer_id_list` /
+  `_coverImage_input` / `_ai_usage_type`。
+  卡片里**没有任何 `input[type=file]`**（点击时才动态创建）→
+  印证「点容器触发 `expect_file_chooser`」的写法是对的，也解释了
+  `upload_file()` 里 `body > input[type=file]` 那条兜底为什么会命中。
+- **验证**：`scripts/probe_upload_form.py` 只读探针（加一张空卡片→dump→重载确认无残留）实跑通过；
+  随后的全自动上传一次成功。
+- **来源**：用户手动示范录制 + 只读 DOM 探针
+
+---
+
 ## 2026-08-30 · MiniMax 生成 · Music 3.0 出歌时间约 10-13 分钟，默认 7 分钟超时不够
 
 - **现象**：`generate.py` 提示「✓ 已点生成」后，轮询 `history_list` 7 分钟仍拿不到 `audio_url`，

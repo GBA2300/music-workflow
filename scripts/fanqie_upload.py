@@ -28,16 +28,21 @@ v15 相对 v14 的关键升级（针对「网络中断后卡住不再继续」�
      这种场景完全容错。
   3. 日志落盘：所有 log() 同步写入 _fanqie_log.txt（之前只在控制台，
      跨进程调试困难）。
-  4. 自带 chrome 清理：main() 开头 taskkill chrome.exe + 删 SingletonLock，
+  4. 启动前**只删 profile 的 Singleton* 锁文件，不杀任何进程**
+     （2026-09-12 改动：原来会 taskkill /f /im chrome.exe，那会连用户自己
+      正在用的 Chrome 一起杀掉，已去掉）。
      避免「上次的浏览器还占着 profile_fanqie」导致重跑失败。
 
-流程：
+流程（2026-09-12 用户示范 + 录制还原，已按实测校正）：
   登录 → 循环(添加歌曲卡片 → 上传音频 → 上传歌词 → 填歌名
             → 词/曲/制作人/歌手 各「添加自己」→ 上传封面 → 确认裁剪 → AI类型)
        → 第一步「下一步」→「确认上传」
-       → 独家授权 → 签约身份(个人) → 「下一步」→「确认签署」
-       → 等合同生成 →「跳转授权」→ ★ 你本人签署电子合同（短信验证码）★
-       → 签完即发布成功（脚本自动写 published.json）
+       → 授权签约模式：选「独家授权」+ 签约身份选「个人」→「下一步」
+       → 预览合同协议：点「确认签署」→ 按钮变「合同生成中」
+       → 合同生成完**自动新开标签**跳电子签（番茄 → 飞书合同 → 电子牵）
+         · 若没自动跳，才需要点「跳转授权」——代码两种都兜住
+       → ★ 你本人签署（可能先要登录电子牵；短信验证码只能本人操作）★
+       → 出现「签署成功」弹窗 = 发布成功（脚本自动写 published.json）
 """
 import argparse
 import asyncio
@@ -53,6 +58,24 @@ ROOT = Path(__file__).resolve().parent          # 脚本所在目录 = 工作目
 LIB_ROOT = ROOT / "library"
 UPLOAD_URL = "https://www.novelfm.com/creator/music/finished/ugc/uploadProduct"
 PROFILE = user_profile("profile_fanqie")         # 每用户私有登录态（%LOCALAPPDATA%/music-workflow/profiles/），绝不在 skill 内
+
+# 统一的浏览器启动参数。
+# ⚠️ 2026-09-12（妙响侧踩到、用户指出）：本脚本启动前会 `_cleanup()` → taskkill /f 强杀上一轮
+#    浏览器，Chromium 因此认为「上次非正常退出」，下次启动会弹一个**白色的「是否恢复页面」弹窗**。
+#    它盖在页面上、会把按钮点击吃掉，而且**是浏览器级 UI、不在页面 DOM 内，Playwright 点不到**，
+#    只能靠启动参数压掉。别改回 args=["--start-maximized"]。
+LAUNCH_ARGS = [
+    "--start-maximized",
+    "--hide-crash-restore-bubble",
+    "--disable-session-crashed-bubble",
+    "--noerrdialogs",
+    "--disable-features=InfiniteSessionRestore",
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-infobars",
+    "--lang=zh-CN",
+]
 
 import sys as _sys                                # noqa: E402
 _sys.path.insert(0, str(ROOT))                    # noqa: E402
@@ -162,15 +185,48 @@ async def _best_match(page, selectors, label=""):
     return None
 
 
-async def _wait_for_upload_page(page, minutes=15):
-    """持久等待上传页（「添加歌曲」按钮出现 = 已登录）。"""
-    log("等待进入上传页（出现「添加歌曲」按钮即登录成功）…")
-    for _ in range(minutes * 30):  # 每 2 秒一次
+# 上传页的「已登录」特征（命中任意一个即算进入上传页）。
+# ⚠️ 2026-09-12 实测发现的坑：空的上传页上，那个大大的虚线框里写的**不是**「添加歌曲」，
+#    而是 **「点击添加歌曲」**（+ 号图标 + 文字）。只写 text=添加歌曲 在部分渲染时机
+#    会匹配不到，导致脚本以为还没登录、在 15 分钟后放弃 —— 而用户其实早就登录好了。
+UPLOAD_PAGE_MARKS = [
+    "text=点击添加歌曲",      # 空页面的大虚线框（实测真实文案）
+    "text=添加歌曲",          # 兜底（已加过卡片时可能出现「添加歌曲」按钮）
+    "text=上传歌曲信息",       # 顶部步骤条
+    "#songs_0_songFile",     # 已有草稿卡片（音频 file input）
+]
+
+
+async def _on_upload_page(page):
+    """当前页是否已经是「上传作品」页（已登录）。"""
+    for sel in UPLOAD_PAGE_MARKS:
         try:
-            if await page.query_selector("text=添加歌曲"):
+            if await page.query_selector(sel):
                 return True
         except Exception:
             pass
+    return False
+
+
+async def _wait_for_upload_page(page, minutes=30):
+    """持久等待上传页（出现上传页特征 = 已登录）。
+
+    ⚠️ 2026-09-12 踩坑（必读）：默认等待时间原为 15 分钟，用户在 16:36 登录成功，
+       脚本恰好在 16:36:58 超时放弃 —— 白等一轮。手动登录（尤其要扫码 / 等短信）
+       完全可能超过 15 分钟，所以放宽到 **30 分钟**，并且每 30 秒打一次「还在等」，
+       让你知道脚本没死。
+    """
+    log(f"等待进入上传页（出现「点击添加歌曲」等特征即登录成功），最多等 {minutes} 分钟…")
+    total = minutes * 30          # 每 2 秒一次
+    for i in range(total):
+        try:
+            if await _on_upload_page(page):
+                log("✓ 已进入上传页")
+                return True
+        except Exception:
+            pass
+        if i and i % 15 == 0:     # 每 30 秒报一次进度
+            log(f"    …仍在等待登录（已等 {i * 2 // 60} 分钟 / 上限 {minutes} 分钟）")
         await asyncio.sleep(2)
     return False
 
@@ -253,7 +309,7 @@ async def _auto_login(page):
 async def ensure_logged_in(page):
     """主入口：已登录直接返回；未登录按需自动/手动登录。"""
     try:
-        if await page.query_selector("text=添加歌曲"):
+        if await _on_upload_page(page):
             log("✓ 已登录（登录态持久化生效，无需验证）")
             return True
     except Exception:
@@ -270,7 +326,10 @@ async def add_song_card(page, idx):
     if await page.locator(f"#songs_{idx}_songFile").count() > 0:
         log(f"✓ 第 {idx + 1} 张歌曲卡片已存在（复用草稿，不重复新建）")
         return
+    # 真实文案是「点击添加歌曲」（见 UPLOAD_PAGE_MARKS 注释），逐个候选兜底
     loc = page.locator("div.add-song-section")
+    if await loc.count() == 0:
+        loc = page.locator("text=点击添加歌曲")
     if await loc.count() == 0:
         loc = page.locator("text=添加歌曲")
     await loc.last.click()
@@ -685,16 +744,35 @@ async def step1_next(page, n_songs, audio_names):
 
 async def step2_auth(page):
     log("[步骤] 第二步 授权签约")
-    await page.wait_for_selector(".authorization-step", timeout=15000)
+    # ⚠️ 2026-09-12 实测：`.authorization-step` 这个 class 在当前版本不一定存在，
+    #    原来写成硬等待会直接抛异常、整个流程中断。改成「等得到就等，等不到继续」，
+    #    真正的存在性判断交给下面的元素查找。
+    try:
+        await page.wait_for_selector(".authorization-step", timeout=8000)
+    except Exception:
+        log("    (未匹配到 .authorization-step，按元素查找继续)")
+    await page.wait_for_selector("text=选择签约模式", timeout=15000)
+
+    # 签约模式：默认已是「独家授权」，但为稳妥仍显式点一次（点不到就沿用默认）
+    # 实测 2026-09-12：卡片文案是「独家授权」/「非独家授权」，class 在旧版是
+    # .auth-type-card.exclusive；用文案兜底更耐改版。
     card = page.locator("div.auth-type-card.exclusive")
     if await card.count() == 0:
         card = page.locator("text=独家授权")
-    await card.first.click()
+    try:
+        await card.first.click(timeout=5000)
+        log("    ✓ 已选择「独家授权」")
+    except Exception as e:
+        log(f"    (独家授权卡片未点到，沿用页面默认: {type(e).__name__})")
     await page.wait_for_timeout(700)
+
+    # 签约身份：实测 #sign_identity_input 仍在（Arco select，默认文案「请选择签约身份」）
     await page.locator("#sign_identity_input").click()
     await page.wait_for_selector("li.arco-select-option", timeout=8000)
     await page.locator("li.arco-select-option").filter(has_text="个人").first.click()
     await page.wait_for_timeout(700)
+    log("    ✓ 签约身份已选「个人」")
+
     await page.locator("button.arco-btn-primary:has-text('下一步')").first.click()
     await page.wait_for_timeout(900)
     await page.wait_for_selector(
@@ -704,23 +782,49 @@ async def step2_auth(page):
     await page.locator("button.arco-btn-primary:has-text('确认签署')").first.scroll_into_view_if_needed()
     await page.locator("button.arco-btn-primary:has-text('确认签署')").click()
     await page.wait_for_timeout(2000)
-    log("    ✓ 第二步确认签署完成")
-    # 用户实测：确认签署后页面生成合同，需点「跳转授权」才能进入合同签署页。
-    # 该点击统一由第三步 step3_sign_contract 负责（避免第二步/第三步重复点击）。
+    log("    ✓ 第二步确认签署完成（合同开始生成）")
+    # 用户实测 2026-09-12：点完「确认签署」按钮会变成「合同生成中」，
+    # 合同生成完**自动新开标签**跳到电子签页（飞书合同 → 电子牵），
+    # 并不需要再点「跳转授权」。由第三步 step3_sign_contract 统一等待。
 
 
 # 电子合同签署完成的关键字（出现在合同页/番茄页任一标签即视为签署成功）
+# ⚠️ 2026-09-12 实测：**用户签完后，这些字并不会一直挂在页面上**——
+#    番茄那边要「点合同」才弹「签署成功」弹窗。所以自动检测可能落空，
+#    此时会走「等你确认 / --mark-published」兜底，属正常情况，不是脚本坏了。
+#    这里刻意**不收太泛的词**（如单独的「已签署」「已完成」）：
+#    电子牵的合同列表里，以前签过的合同也显示「已签署」，那会造成**误判成发布成功**，
+#    后果是把没发布的歌记进 published.json、以后永远跳过。宁可漏判也不要误判。
 SIGN_DONE_KEYWORDS = [
     "签署成功", "签署完成", "已完成签署", "签约成功", "合同已生效",
     "签署完毕", "签署已完成", "认证成功", "签约完成",
+    "您已完成签署", "合同签署完成", "已完成全部签署", "签署完成，合同",
 ]
 # 等待用户手动签署电子合同的最长时间（秒）。签署要收短信验证码，给足 30 分钟。
 SIGN_WAIT_SEC = 1800
 
 
+# 番茄自家的所有域名（★ 2026-09-12 踩坑：创作中心域名是 www.novelfm.com，
+# 不含 "fanqie" 字样，旧代码用 `"fanqie" not in u` 判断 → 把番茄页自己
+# 当成了「非番茄页」优先返回，导致截图/置顶/滚按钮全作用在番茄页上，
+# 真正的电子签标签被忽略。）
+FANQIE_HOST_MARKS = ("fanqie", "novelfm", "bytedance", "douyin", "snssdk")
+
+
+def _is_fanqie_url(u):
+    ul = (u or "").lower()
+    return any(k in ul for k in FANQIE_HOST_MARKS)
+
+
 async def find_contract_page(ctx, fallback_page):
     """跳转授权后，合同签署页可能在当前页，也可能新开标签页（第三方电子签平台）。
-    优先返回非番茄域名、非空白页的那个标签；找不到就退回原页面。"""
+
+    ★ 2026-09-12 修正：优先用 **URL 特征** 认签署页（飞书合同 / 电子牵），
+      认不出再退回「非番茄域名的第一个标签」。
+    """
+    ps = sign_pages(ctx)
+    if ps:
+        return ps[0]
     for pg in list(ctx.pages):
         try:
             u = (pg.url or "").strip()
@@ -728,7 +832,7 @@ async def find_contract_page(ctx, fallback_page):
             continue
         if not u or u == "about:blank":
             continue
-        if "fanqie" not in u:
+        if not _is_fanqie_url(u):
             return pg
     return fallback_page
 
@@ -856,46 +960,207 @@ async def ensure_sign_clickable(cpage, log):
     return found
 
 
-async def click_jump_authorize(page):
-    """确认签署后合同生成，需点击「跳转授权」进入预览/发布页。
-    合同生成需要 30s~3min，「跳转授权」按钮在合同生成完后才出现，
-    因此先等「合同生成中」消失，再点跳转授权。
+# ============================================================================
+# ★ 2026-09-12 用户反馈（原话）：
+#   「跳转成功就可以了，不需要重复跳新开多个页面，只需要打开一个签署页面就可以了。」
+#   实测踩坑：签署页其实第 1 次点「跳转授权」就已经开出来了（3 秒内），
+#   但当时靠**正文文字**判断「有没有到电子签页」，而 contract.feishu.cn 的
+#   h5 页正文加载慢 / 不含特征词 → 判定成「还没到」→ 30 秒后又补点一次
+#   → 于是白白多开了一个签署页。
+#   结论：判断「签署页开没开」要用 **URL**（快且准），不要用正文文字；
+#         一旦确认开出来了就立刻收手，并把多开的关掉。
+# ============================================================================
+SIGN_URL_MARKS = (
+    "contract.feishu.cn", "letsign.com", "s.letsign",
+    "sign/signlink", "esign", "/sign", "signcontract",
+)
+
+
+def is_sign_page(pg):
+    """按 URL 判断某个标签页是不是「电子签/合同签署页」（比正文文字可靠得多）。"""
+    try:
+        u = (pg.url or "").lower()
+    except Exception:
+        return False
+    return any(k in u for k in SIGN_URL_MARKS)
+
+
+def sign_pages(ctx):
+    """当前所有签署页标签（保持顺序，第 1 个就是要保留的那个）。"""
+    if ctx is None:
+        return []
+    try:
+        return [p for p in list(ctx.pages) if is_sign_page(p)]
+    except Exception:
+        return []
+
+
+async def dedupe_sign_tabs(ctx, pages=None, logger=None):
+    """★ 用户要求「只需要打开一个签署页面」：多开的签署页自动关掉，只留第一个。"""
+    if logger is None:
+        logger = log
+    ps = pages if pages is not None else sign_pages(ctx)
+    if len(ps) <= 1:
+        return ps
+    keep = ps[0]
+    for extra in ps[1:]:
+        try:
+            await extra.close()
+            logger("    · 已关闭重复打开的签署页（只保留一个）")
+        except Exception:
+            pass
+    return [keep]
+
+
+async def click_jump_authorize(page, ctx=None):
+    """点「确认签署」之后，把电子签页面送到用户面前。
+
+    ★ 2026-09-12 实测修正（重要）：
+      旧实现是「等『合同生成中』消失 → 点『跳转授权』」。实测发现当前版本
+      **根本没有「跳转授权」按钮** —— 点完「确认签署」后按钮直接变成「合同生成中」，
+      合同生成完毕由**页面自己新开一个标签页**跳到电子签：
+          番茄 → contract.feishu.cn（飞书合同）→ www.letsign.com（电子牵）
+      所以这里改成三种成功条件任取其一：
+        ① 检测到新标签页出现（当前版本的真实路径）
+        ② 找到并成功点击了「跳转授权 / 去授权 / 查看合同」类按钮（兼容旧版）
+        ③ 当前页正文里已经出现电子签平台的特征字样
     """
-    log("[步骤] 等待合同生成 + 点击「跳转授权」进入下一页")
+    log("[步骤] 等待合同生成 / 打开电子签页面")
+    before = 0
+    if ctx is not None:
+        try:
+            before = len(ctx.pages)
+        except Exception:
+            before = 0
+
     candidates = [
         "button:has-text('跳转授权')",
         "a:has-text('跳转授权')",
         "button:has-text('去授权')",
         "button:has-text('立即授权')",
         "button:has-text('查看合同')",
+        "button:has-text('去签署')",
         ":text('跳转授权')",  # 兜底匹配任意元素含此文本
     ]
-    deadline = time.time() + 240   # 合同生成最慢约 3 分钟
-    phase = "generating"           # generating → ready
+    deadline = time.time() + 900   # ★ 2026-09-12 实测：合同生成可能要 4~7 分钟，
+                                   #   原来写 360s 太紧，容易在跳转前一秒放弃。
+                                   #   放宽到 15 分钟，每 30 秒报一次还在等。
+    # ★ 2026-09-12 实测（用户示范 + 自动跑都验证到）：**「跳转授权」是两段式的**
+    #   合同生成完 → 出现第一颗「跳转授权」→ 点掉后页面变成
+    #   「已跳转签约页 / 请前往签约页完成授权签署」+ **又一颗「跳转授权」**
+    #   → 再点一次才真正打开电子签（电子牵）。
+    #   所以这里绝不能点一下就 return，必须继续轮询直到真的看到签约页/新标签。
+    # ★ 2026-09-12 再次修正（用户反馈「不要重复跳新开多个页面」）：
+    #   点完必须先**等它把页面开出来**（最多 20 秒，靠 URL 判断），
+    #   开出来了 → 立刻 return，绝不再点；
+    #   只有确认**压根没开出来**，才允许再点 1 次。上限 2 次。
+    MAX_CLICKS = 2
+    clicks = 0
+    last_hint = 0
+    ESIGN_MARKS = ("电子牵", "飞书合同", "letsign", "选择签章", "意愿认证",
+                   "文件签署", "待我签署", "签署文件")
+
+    def _looks_esign(text):
+        return any(k in text for k in ESIGN_MARKS)
+
+    async def _opened_already():
+        """签署页是否已经开出来了（URL 优先，正文兜底）。"""
+        ps = sign_pages(ctx)
+        if ps:
+            return ps
+        if ctx is not None:
+            try:
+                for pg in list(ctx.pages):
+                    try:
+                        t = await pg.evaluate("document.body.innerText")
+                    except Exception:
+                        continue
+                    if _looks_esign(t or ""):
+                        return [pg]
+            except Exception:
+                pass
+        return []
+
     while time.time() < deadline:
-        body = await page.evaluate("document.body.innerText")
-        if phase == "generating":
-            # 合同生成中时只 sleep，等「生成中」消失再切换到找按钮
-            if "合同生成中" not in body and "生成中" not in body:
-                phase = "ready"
-                log("    ✓ 合同生成已结束，开始查找「跳转授权」按钮")
-            else:
-                await asyncio.sleep(3)
-                continue
-        # phase == "ready"：找按钮
-        for sel in candidates:
-            loc = page.locator(sel)
-            if await loc.count() > 0:
-                try:
-                    await loc.first.scroll_into_view_if_needed()
-                    await loc.first.click(timeout=3000)
-                    log(f"    ✓ 已点击「跳转授权」类按钮: {sel}")
-                    await page.wait_for_timeout(2500)
+        # ① 签署页已开（URL 判断最可靠）→ 收手，只留一个
+        got = await _opened_already()
+        if got:
+            log(f"    ✓ 签署页已打开：{(got[0].url or '')[:110]}")
+            await dedupe_sign_tabs(ctx, got)
+            return
+
+        # ② 新标签出现但 URL 还没成型 —— 也认为跳转成功，别再点
+        if ctx is not None:
+            try:
+                pages_now = list(ctx.pages)
+                if len(pages_now) > before:
+                    newp = pages_now[-1]
+                    log(f"    ✓ 已新开标签（电子签）：{(newp.url or '')[:110]}")
+                    await dedupe_sign_tabs(ctx)
                     return
+            except Exception:
+                pass
+
+        body = ""
+        try:
+            body = await page.evaluate("document.body.innerText")
+        except Exception:
+            pass
+
+        # ③ 当前页正文已是电子签
+        if _looks_esign(body):
+            log("    ✓ 当前页已是电子签页面")
+            return
+
+        # ④ 点「跳转授权」：点完先给它 20 秒开页面，开出来就收手
+        if "生成中" not in body and clicks < MAX_CLICKS:
+            hit = None
+            for sel in candidates:
+                try:
+                    if await page.locator(sel).count() > 0:
+                        hit = sel
+                        break
+                except Exception:
+                    pass
+            if hit:
+                try:
+                    loc = page.locator(hit).first
+                    await loc.scroll_into_view_if_needed(timeout=2000)
+                    await loc.click(timeout=3000)
+                    clicks += 1
+                    log(f"    ✓ 第 {clicks} 次点击「跳转授权」（{hit}）")
+                    ok = False
+                    for _ in range(10):          # 最多等 20 秒
+                        await page.wait_for_timeout(2000)
+                        got = await _opened_already()
+                        if got:
+                            log(f"    ✓ 签署页已打开（不再重复跳）：{(got[0].url or '')[:110]}")
+                            await dedupe_sign_tabs(ctx, got)
+                            ok = True
+                            break
+                        if ctx is not None:
+                            try:
+                                if len(list(ctx.pages)) > before:
+                                    ok = True
+                                    break
+                            except Exception:
+                                pass
+                    if ok:
+                        return
+                    if clicks >= MAX_CLICKS:
+                        log("    · 已点满 2 次仍未确认签署页，交给下一步继续等待")
+                        return
+                    continue          # 确实没开出来，才回去再点一次
                 except Exception as e:
-                    log(f"    (点击 {sel} 失败: {e})")
-        await asyncio.sleep(1.5)
-    log("    ⚠️ 240s 内未找到「跳转授权」按钮（合同生成可能失败）；继续尝试发布")
+                    log(f"    (点击「跳转授权」失败: {type(e).__name__}）")
+
+        if time.time() - last_hint > 30:
+            tag = "合同生成中…" if "生成中" in body else "等待电子签页面…"
+            log(f"    · {tag}")
+            last_hint = time.time()
+        await asyncio.sleep(2)
+
+    log("    ⚠️ 15 分钟内未等到电子签页面（合同生成可能较慢或失败）；继续进入签署等待")
 
 
 async def step3_sign_contract(page, ctx, folders=None):
@@ -909,7 +1174,7 @@ async def step3_sign_contract(page, ctx, folders=None):
     """
     log("[步骤] 第三步 等待合同生成 + 跳转授权（终点：你签署电子合同）")
 
-    await click_jump_authorize(page)
+    await click_jump_authorize(page, ctx)
     await asyncio.sleep(4)
 
     # 跳转授权后，合同签署页可能在当前页，也可能新开标签页（第三方电子签平台）
@@ -924,8 +1189,12 @@ async def step3_sign_contract(page, ctx, folders=None):
     await ensure_sign_clickable(cpage, log)
 
     log("=" * 66)
-    log("    👉 请在浏览器里完成【电子合同签署】（短信验证码等需你本人操作）。")
-    log("    👉 番茄没有「发布」按钮：签完合同 = 发布成功。")
+    log("    👉 已到【电子签页面】，剩下要你本人操作（脚本不代签）：")
+    log("       ① 电子签平台（电子牵）可能先要求**登录**：手机号 + 验证码，")
+    log("          勾「我已阅读并同意…」→「同意协议并登录」")
+    log("       ② 进入「文件签署」→ 选择签章 → 点右下角「签署」")
+    log("       ③ 弹「意愿认证」→ 填手机收到的数字验证码 → 确定")
+    log("    👉 番茄没有「发布」按钮：**显示「签署成功」就等于发布成功**。")
     log("    👉 签署完成后脚本会自动检测并记入 published.json；")
     log("       若自动检测没生效，告诉我「已发布」，或自行运行：")
     log("       python fanqie_upload.py --mark-published <文件夹名,...>")
@@ -933,8 +1202,26 @@ async def step3_sign_contract(page, ctx, folders=None):
 
     deadline = time.time() + SIGN_WAIT_SEC
     last_hint = 0
+    nudges = 0
+    last_nudge = 0
+    # ★ 2026-09-12 用户反馈：「不需要重复跳新开多个页面，只需要打开一个签署页面」。
+    #   原来这里是每 30 秒无脑补点一次，且判断依据是**正文文字**——
+    #   飞书合同的 h5 页正文里本来就没有那些特征词，于是永远判定「还没到电子签」，
+    #   结果每 30 秒点一次「跳转授权」→ 多开一堆签署页（用户当场看到的就是这个）。
+    #   现在：① 用 URL 判断签署页是否已开；② 已开就绝不补点；③ 最多补点 1 次。
+    MAX_NUDGES = 1
     while time.time() < deadline:
-        for pg in list(ctx.pages):
+        try:
+            all_pages = list(ctx.pages)
+        except Exception:
+            all_pages = [page]
+
+        # ① 已经有签署页（URL 判断）→ 视为已到位，且顺手把多开的关掉
+        esign_seen = bool(sign_pages(ctx))
+        if esign_seen:
+            await dedupe_sign_tabs(ctx)
+
+        for pg in all_pages:
             try:
                 body = await pg.evaluate("document.body.innerText")
             except Exception:
@@ -945,6 +1232,24 @@ async def step3_sign_contract(page, ctx, folders=None):
                     added = mark_published(list(folders))
                     log(f"    ✓ 已写入 published.json（防重复）：{added}")
                 return True
+            if any(k in body for k in ("电子牵", "letsign", "选择签章", "意愿认证", "文件签署")):
+                esign_seen = True
+
+        # ② 兜底补点（用户实测：合同生成后**有时自动跳转，有时要手动点「跳转授权」**）：
+        #    只在「压根没有任何签署页」时补点，且全程最多 1 次 —— 绝不重复跳。
+        if (not esign_seen) and nudges < MAX_NUDGES and time.time() - last_nudge > 30:
+            last_nudge = time.time()
+            nudges += 1
+            try:
+                loc = page.locator("button:has-text('跳转授权')")
+                if await loc.count() > 0:
+                    await loc.first.scroll_into_view_if_needed(timeout=2000)
+                    await loc.first.click(timeout=3000)
+                    log("    · 番茄页仍有「跳转授权」，补点 1 次（此后不再重复点击）")
+                    await asyncio.sleep(6)
+                    await dedupe_sign_tabs(ctx)
+            except Exception:
+                pass
 
         # 每 60s 提示一次还在等待，避免日志看着像卡死
         if time.time() - last_hint > 60:
@@ -953,7 +1258,19 @@ async def step3_sign_contract(page, ctx, folders=None):
             last_hint = time.time()
         await asyncio.sleep(5)
 
-    log(f"    ⚠️ {SIGN_WAIT_SEC // 60} 分钟内未检测到签署完成。")
+    log(f"    ⚠️ {SIGN_WAIT_SEC // 60} 分钟内未自动检测到签署完成。")
+    # 落一份「当时各标签页的正文摘要」，方便下次排错（不用再让用户复现一遍）
+    try:
+        for i, pg in enumerate(list(ctx.pages)):
+            try:
+                t = (await pg.evaluate("document.body.innerText")) or ""
+            except Exception:
+                t = ""
+            one = " ".join(t.split())[:300]
+            log(f"    · [标签{i}] {(pg.url or '')[:90]}")
+            log(f"        正文摘要：{one}")
+    except Exception:
+        pass
     log("    · 若你其实已签完，请运行：python fanqie_upload.py --mark-published <文件夹名,...>")
     return False
 
@@ -973,17 +1290,18 @@ async def main():
     args = ap.parse_args()
 
     # 清理残留浏览器（避免 lock 住 profile_fanqie，导致重跑失败）
-    # 跨平台：Windows 用 taskkill，macOS/Linux 用 pkill，统一在 browser_utils 里处理
+    # ⚠️ 2026-09-12 重要改动：**不再 taskkill /f /im chrome.exe**！
+    #    原实现调 browser_utils.cleanup()，它会强杀所有名字叫 chrome 的进程 ——
+    #    那会连【你自己正在用的 Chrome 窗口】一起杀掉，你正在看的东西会瞬间全没。
+    #    现在只删 profile 的 Singleton* 锁文件（这就能解开上次没关干净的锁），
+    #    不碰任何进程。万一真的还有别的浏览器占着这个 profile，Playwright 启动时
+    #    会报错，那时再单独处理，代价远小于误杀用户浏览器。
     try:
-        from browser_utils import cleanup as _cleanup
-        _cleanup(PROFILE)
+        from browser_utils import clear_profile_locks as _clear_locks
+        _removed = _clear_locks(PROFILE)
+        if _removed:
+            log(f"已清理 profile 残留锁：{_removed}")
     except Exception:
-        # 万一 browser_utils.py 不在同目录，退回 Windows 原生命令，不至于整个崩掉
-        try:
-            import subprocess as _sp
-            _sp.run(["taskkill", "/f", "/im", "chrome.exe"], capture_output=True, timeout=10)
-        except Exception:
-            pass
         try:
             _lock = PROFILE / "SingletonLock"
             if _lock.exists():
@@ -1008,7 +1326,7 @@ async def main():
         log("登录成功、看到上传页「添加歌曲」后，脚本自动退出并保存登录态。")
         async with async_playwright() as p:
             ctx = await p.chromium.launch_persistent_context(
-                str(PROFILE), headless=False, args=["--start-maximized"],
+                str(PROFILE), headless=False, args=LAUNCH_ARGS,
                 viewport=None)   # 页面跟随窗口大小，不同设备自适应
             page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             await fit_window_to_screen(page)   # 窗口显式铺满屏幕（150% DPI 也能填满）
@@ -1046,7 +1364,7 @@ async def main():
 
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
-            PROFILE, headless=False, args=["--start-maximized"],
+            PROFILE, headless=False, args=LAUNCH_ARGS,
             viewport=None   # 页面跟随窗口大小，不同设备自适应（不固定视口）
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
@@ -1108,12 +1426,18 @@ async def main():
         log("   若需手动：在浏览器里完成剩余步骤后关闭")
         log("============================================================")
 
-        try:
-            while True:
-                await asyncio.sleep(30)
-        except Exception:
-            pass
-        await ctx.close()
+        # 保持浏览器打开，直到用户关掉窗口。
+        # ⚠️ 2026-09-12：原来是无条件 `while True: sleep(30)`，用户关窗后脚本也**永不退出**，
+        #    会一直挂在后台占着进程。现在每 30 秒探一次，发现窗口都关了就直接结束。
+        while True:
+            await asyncio.sleep(30)
+            try:
+                if len(ctx.pages) == 0:
+                    log("· 检测到浏览器窗口已关闭，脚本退出")
+                    break
+            except Exception:
+                log("· 浏览器已断开，脚本退出")
+                break
 
 
 if __name__ == "__main__":
