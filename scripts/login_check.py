@@ -3,8 +3,9 @@
 登录诊断 / 登录辅助工具 —— 专治「点了登录没反应」
 ==========================================================
 用法（在你的工作目录里运行）：
-    python login_check.py minimax    # 登录 MiniMax（生成音乐用）
+    python login_check.py douyin     # 登录 妙响·抖音音乐创作实验室（★ 主力生成端，用抖音账号）
     python login_check.py fanqie     # 登录 番茄音频创作平台（发布用）
+    python login_check.py minimax    # 登录 MiniMax（历史备选生成端，已停用）
 
 比普通 `--login` 多做了 4 件事，这 4 件正是「点登录没反应」的常见原因：
 
@@ -19,8 +20,10 @@
     出问题时可以直接把图给 AI 看，不用你描述。
  4. **自动判定登录成功**：不需要回到黑窗口按任何键。
 
-登录态保存在工作目录的 profile 文件夹里（MiniMax→`profile/`，
-番茄→`profile_fanqie/`），只属于你本机，不会外泄。
+登录态**不在工作目录里**，而是存在「系统每用户私有目录」
+`%LOCALAPPDATA%/music-workflow/profiles/<name>`（由 paths.py 解析）：
+妙响→`douyin`，番茄→`profile_fanqie`，MiniMax→`profile`。
+只属于你本机，不会外泄。
 """
 
 import json
@@ -82,8 +85,23 @@ def _cfg():
 _CFG = _cfg()
 
 TARGETS = {
+    # ★ 2026-09-19 新增：妙响（抖音音乐创作实验室）——当前主力生成端。
+    #   profile 名必须与 miaoxiang.py 的 PROFILE_NAME 一致（都是 "douyin"），
+    #   否则这里登录完、生成脚本读的是另一个 profile，等于白登。
+    "douyin": {
+        "name": "妙响（抖音音乐创作实验室）",
+        "url": "https://music.douyin.com/studio/assets",
+        "profile": "douyin",
+        "login_marks": [
+            "text=登录", "text=立即登录", "text=扫码登录", "text=手机号登录",
+        ],
+        "ok_marks": [
+            # 资产页「生成结果」tab 是登录后才有的（ensure_genresult_tab 也靠它）
+            "text=生成结果", "text=对话记录", "text=资产",
+        ],
+    },
     "minimax": {
-        "name": "MiniMax 音乐",
+        "name": "MiniMax 音乐（历史备选，已停用）",
         # 以 config.json 的 base_url 为准，保证和 generate.py 打开的是同一页
         "url": _CFG.get("base_url") or "https://www.minimaxi.com/audio/music",
         "profile": _CFG.get("profile_dir") or "profile",
@@ -281,5 +299,12 @@ def run(target_key: str, minutes: int = 20):
 
 
 if __name__ == "__main__":
-    key = sys.argv[1] if len(sys.argv) > 1 else "minimax"
+    argv = sys.argv[1:]
+    # -h/--help：别把它当成平台名（以前会误报「不认识的平台: --help」）
+    if any(a in ("-h", "--help", "help") for a in argv):
+        print(__doc__.strip())
+        print(f"\n可选平台: {', '.join(TARGETS)}    （不带参数默认 douyin / 妙响）")
+        sys.exit(0)
+    # 默认 douyin（妙响）—— 它现在是主力生成端；minimax 已降为历史备选。
+    key = argv[0] if argv else "douyin"
     sys.exit(run(key))

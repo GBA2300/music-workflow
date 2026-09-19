@@ -1,6 +1,7 @@
 {
-  "_说明": "这是配置文件。绝大多数情况你只需要改 base_url / model / quantity_per_round / headless 四项。",
+  "_说明": "⚠️ 本文件只服务【MiniMax 历史备选端】（generate.py），该端已于 2026-09 停用。当前主力生成端是妙响（miaoxiang.py），妙响用固定选择器、不读本文件。绝大多数情况你只需要改 base_url / model / quantity_per_round / headless 四项。",
 
+  "_base_url说明": "MiniMax 音乐页地址（历史备选端专用）。主力端妙响的地址硬编码在 miaoxiang.py（https://music.douyin.com/studio），不在这里配。",
   "base_url": "https://www.minimaxi.com/audio/music",
   "profile_dir": "profile",
   "library_dir": "library",
@@ -9,7 +10,7 @@
 
   "headless": false,
   "model": "Music-3.0",
-  "_quantity说明": "每轮点一次生成要出几首歌。MiniMax 页面默认 2，脚本会在点生成前把页面上的数量控件改成本值（默认 1，点一次出一首，不浪费额度）。",
+  "_quantity说明": "【仅 MiniMax 备选端有效】每轮点一次生成要出几首歌。MiniMax 页面默认 2，脚本会在点生成前把页面上的数量控件改成本值（默认 1，点一次出一首，不浪费额度）。⚠️ 妙响端不受此项影响——妙响固定 1 份歌词出 2 个版本，数量不可改。",
   "quantity_per_round": 1,
   "is_instrumental": false,
 

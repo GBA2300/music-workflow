@@ -7,7 +7,10 @@
 把文件夹发出去 = 把你的账号交给别人。所以所有脚本解析登录态目录都必须走
 `user_profile(name)`，绝不再写 `ROOT / "profile"` 这类代码。
 
-MiniMax 登录态 name="profile"，番茄登录态 name="profile_fanqie"。
+登录态目录名约定：
+    妙响（主力生成端）  name="douyin"
+    番茄（上传/发布端）  name="profile_fanqie"
+    MiniMax（历史备选端）name="profile"
 """
 import os
 from pathlib import Path

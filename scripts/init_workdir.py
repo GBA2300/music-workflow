@@ -5,22 +5,25 @@ music-workflow —— 一键初始化工作目录
 为【每一位使用者】创建一套独立、干净、零配置的工作目录：
 
   <工作目录>/
-    generate.py          MiniMax 生成+下载+出封面（含 --login）
-    cover.py             封面生成器
+    miaoxiang.py          ★ 主力生成端：妙响（抖音音乐创作实验室）生成+下载+出封面（含 --login）
+    generate.py           ⚠️ 历史备选端：MiniMax 网页端（已停用，仅救急回退用）
+    cover.py              封面生成器
+    paths.py              登录态目录解析（每用户私有，保证账号不外泄）
+    browser_utils.py      跨平台浏览器清理（Windows/macOS/Linux 通用）
     fanqie_upload.py      番茄上传填表+授权（含 --login / --mark-published）
+    verify_published.py   只读核对：查已发布的歌在番茄后台的真实 ID/状态
     init_workdir.py       本脚本（可重复运行）
     login_check.py        登录诊断/登录（反自动化+自动截图，专治「点登录没反应」）
     probe_generate.py     生成探针（查「点生成后等不到歌」）
     inspect_buttons.py    按钮探测器（查按钮 selector 该怎么写）
-    browser_utils.py      跨平台浏览器清理（Windows/macOS/Linux 通用）
-    popup_guard.py        弹窗守卫（自动关掉挡路浮层；被上面两个主脚本 import）
+    popup_guard.py        弹窗守卫（自动关掉挡路浮层；被主脚本 import）
     test_popup_guard.py   弹窗守卫自检（真起浏览器跑 14 项）
-    config.json          平台 URL、选择器、封面参数
-    tasks.csv            歌单模板（改这里写你自己的歌）
-    requirements.txt     playwright, pillow
-    library/             曲库（初始为空）
-    lyrics/              歌词 txt（初始为空）
-    published.json       已发布记录（初始 {}，防止重复发布）
+    config.json           平台 URL、选择器、封面参数（⚠️ 只服务 MiniMax 备选端）
+    tasks.csv             歌单模板（改这里写你自己的歌）
+    requirements.txt      playwright, pillow
+    library/              曲库（初始为空）
+    lyrics/               歌词 txt（初始为空）
+    published.json        已发布记录（初始 {}，防止重复发布）
 
 ★ 隐私红线：登录态（Cookie/凭证）绝不放在本工作目录或 skill 文件夹内。
   它存在「系统每用户私有目录」%LOCALAPPDATA%/music-workflow/profiles/，
@@ -42,19 +45,21 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # 需要复制进工作目录的文件（脚本 + 配置 + 模板）
 #
-# ⚠️ 新增任何「被 generate.py / fanqie_upload.py import 的模块」时，必须同步加进这里。
+# ⚠️ 新增任何「被 import 的模块」或「要用户自己跑的脚本」时，必须同步加进这里。
 #    漏了不会在仓库里报错（本目录有全套文件），但用户 init 出来的工作目录会缺文件，
-#    一运行就 ImportError —— 而且报错发生在别人的电脑上，很难排查。
-#    popup_guard.py 就是这么被漏掉过一次。
+#    一运行就 ImportError / 找不到脚本 —— 而且报错发生在别人的电脑上，很难排查。
+#    踩过两次：popup_guard.py（被 import 的模块）、miaoxiang.py（主力生成脚本）。
 COPY_FILES = [
-    "generate.py",
-    "cover.py",
+    "miaoxiang.py",        # ★ 主力生成端（妙响 / 抖音音乐创作实验室）
+    "cover.py",            # 封面生成（被 miaoxiang.py / generate.py 调用）
     "fanqie_upload.py",
     "init_workdir.py",
+    "verify_published.py",  # 发布结果只读核对（纪律 3）
     "login_check.py",
+    "fanqie_learn.py",     # 卡点学习模式的录制器（纪律 2）
+    "generate.py",         # ⚠️ 历史备选：MiniMax 网页端（已停用，保留作 fallback）
     "probe_generate.py",
     "inspect_buttons.py",
-    "verify_published.py",
     "browser_utils.py",
     "popup_guard.py",
     "paths.py",
@@ -132,16 +137,19 @@ def main():
 
     # ── 结果 ──
     print("")
-    print(f"✅ 工作目录已初始化：{workdir}")
-    print("   包含脚本：generate.py / cover.py / fanqie_upload.py / init_workdir.py")
-    print("   空目录（登录态留空，等你自己的账号）：library/ lyrics/ profile/ profile_fanqie/")
+    print("✅ 工作目录已初始化：{0}".format(workdir))
+    print("   包含脚本：miaoxiang.py（主力生成）/ cover.py / fanqie_upload.py / "
+          "verify_published.py / init_workdir.py …")
+    print("   已建空目录：library/ lyrics/")
     print("   已创建：tasks.csv（歌单模板）、published.json（空）")
+    print("   登录态不在工作目录里，存在系统每用户私有目录")
+    print("   （%LOCALAPPDATA%/music-workflow/profiles/），首次运行各自登录自己的账号")
     print("")
     print("接下来三步：")
-    print(f"   1) cd \"{workdir}\"")
-    print(f"   2) {py_exe} generate.py --login        # 用你的账号登录 MiniMax")
-    print(f"   3) {py_exe} fanqie_upload.py --login   # 用你的番茄账号登录")
-    print("   然后编辑 tasks.csv，运行 generate.py 生成，再 fanqie_upload.py 上传。")
+    print("   1) cd \"{0}\"".format(workdir))
+    print("   2) {0} miaoxiang.py --login          # 用你的抖音账号登录妙响".format(py_exe))
+    print("   3) {0} fanqie_upload.py --login     # 用你的番茄账号登录".format(py_exe))
+    print("   然后编辑 tasks.csv，运行 miaoxiang.py --gen 生成，再 fanqie_upload.py 上传。")
 
 
 if __name__ == "__main__":

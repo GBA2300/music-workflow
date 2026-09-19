@@ -1395,6 +1395,48 @@ def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL, picks=
             pass
 
 
+def do_list_cards(p, workdir):
+    """只读：打印资产页「生成结果」里所有卡片的**签名**，供 --card 复制使用。
+
+    用来给 `--redownload --card "签名=歌名"` 抄参数。
+    **不点生成、不点导出、不点下载** —— 纯读页面文本，零额度消耗。
+
+    为什么要有它：以前靠一个下划线开头的临时探针脚本（`_diag_cards.py`）干这事，
+    那脚本还被 .gitignore 的 `_diag_*` 规则拦住没法提交，用户拿不到。
+    现在并进主脚本，随 `miaoxiang.py` 一起分发。
+    """
+    log("")
+    log("=" * 66)
+    log(f"只读列出「生成结果」卡片签名 | 工作目录：{workdir}")
+    log("=" * 66)
+
+    ctx, page = open_browser(p)
+    page.set_default_timeout(30000)
+    try:
+        if not ensure_genresult_tab(page):
+            log("  ✗ 没能切到「生成结果」tab，放弃")
+            return
+        sigs = _cards_strict(page)
+        log(f"共 {len(sigs)} 张卡片（新→旧）：")
+        log("")
+        for i, s in enumerate(sigs):
+            kind = "导出卡" if "编辑器导出" in s else "生成卡"
+            log(f"  [{i:>2}] ({kind}) {s}")
+        log("")
+        log("─" * 66)
+        log("要用哪几张，就这样写（注意整串签名都要带上，含 · 和日期时间）：")
+        log('  --card "月照归期 03:22 · 2026-09-17 18:57=踏月寻你" \\')
+        log('  --card "踏月寻你 03:02 · 2026-09-17 18:57=踏月寻你（动听版）"')
+        log("")
+        log("⚠️ 「生成卡」才能走导出链路；「导出卡」是导出后的产物，直接下载即可。")
+        log("⚠️ 签名里的时间戳是**平台创建时间**，不是下载时间 —— 认卡别认错。")
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="妙响（抖音音乐创作实验室）生成端")
     ap.add_argument("--login", action="store_true", help="打开浏览器手动登录（关掉窗口即完成）")
@@ -1415,6 +1457,9 @@ def main():
                     help="配合 --redownload：显式指定卡片签名 → 显示歌名，格式 "
                          "'卡片签名=显示歌名'，可重复。这是最可靠的补下载方式"
                          "（不指定时才退回「最新 N 张」，有张冠李戴风险）")
+    ap.add_argument("--list-cards", action="store_true",
+                    help="只读列出资产页「生成结果」的所有卡片签名（给 --card 抄参数用；"
+                         "不点生成/导出/下载，零额度消耗）")
     ap.add_argument("--workdir", default=None,
                     help="工作目录（含 tasks.csv / lyrics / library）；默认取当前目录")
     ap.add_argument("--song", default=None, help="只生成指定歌名的那一首")
@@ -1435,7 +1480,7 @@ def main():
 
     if not args.login and not args.probe and not args.walk \
             and not args.learn and not args.gen and not args.redownload \
-            and not args.card:
+            and not args.card and not args.list_cards:
         ap.print_help()
         print("\n提示：第一次用先 --login，然后 --walk / --learn，熟悉后用 --gen。")
         return
@@ -1454,6 +1499,9 @@ def main():
             workdir = resolve_workdir(args.workdir)
             mode = ask_download_mode(args.download_mode)
             do_gen(p, workdir, mode, args.max_wait, args.song, args.model)
+        elif args.list_cards:
+            workdir = resolve_workdir(args.workdir)
+            do_list_cards(p, workdir)
         elif args.redownload:
             workdir = resolve_workdir(args.workdir)
             mode = ask_download_mode(args.download_mode)

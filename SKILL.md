@@ -1,15 +1,18 @@
 ---
 name: music-workflow
-description: 端到端 AI 音乐自动化生产线：MiniMax 网页端生成音乐 → 下载 → 自动生成 1440×1440 PNG 封面 → 上传到番茄音频创作平台（填表+独家授权+跳转授权）→ 停在电子合同签署页，由用户本人收验证码签署（签完=发布成功，番茄无「发布」按钮）。关键特性是「多账号通用」：不内置任何人的账号/手机号/登录态，每个使用者首次运行自行登录自己的账号，登录态保存在各自工作目录。当用户提到「音乐自动化」「自动发布到番茄」「生成音乐并上传」「番茄自动填表」「AI音乐发布」「music-workflow」「用自己账号发歌」等时触发。
+description: 端到端 AI 音乐自动化生产线：**妙响（抖音音乐创作实验室）**生成音乐 → 编辑导出并下载 → 自动生成 1440×1440 PNG 封面 → 上传到番茄音频创作平台（填表+独家授权+跳转授权）→ 停在电子合同签署页，由用户本人收验证码签署（签完=发布成功，番茄无「发布」按钮）。关键特性是「多账号通用」：不内置任何人的账号/手机号/登录态，每个使用者首次运行自行登录自己的账号，登录态保存在各自工作目录。当用户提到「音乐自动化」「自动发布到番茄」「生成音乐并上传」「番茄自动填表」「AI音乐发布」「music-workflow」「用自己账号发歌」「妙响」「抖音音乐创作」等时触发。
 agent_created: true
 ---
 
 # music-workflow —— AI 音乐生成到发布的自动化生产线（人人可用·各用各账号）
 
+> **生成端现状（2026-09 起）**：主力是 **妙响 / 抖音音乐创作实验室**（`scripts/miaoxiang.py`）。
+> 早期用的 MiniMax 网页端（`scripts/generate.py`）**已停用**，仅作为历史备选保留，代码未删。
+
 ## ★★★ 执行纪律（开工前必读）
 
 本 skill 要公开给别人用，因此**怎么跟用户协作**和「怎么跑脚本」同样重要。
-以下三条是硬性纪律，违反会让用户觉得"它在后台自己转，我不知道发生了什么"。
+以下四条是硬性纪律（编号 0–3），违反会让用户觉得"它在后台自己转，我不知道发生了什么"。
 
 ### 纪律 0：开工先问「歌词和风格谁写」——不许默认代劳，也不许默认甩给用户
 
@@ -40,7 +43,7 @@ agent_created: true
 
 | 环节 | 提醒要点 |
 |---|---|
-| 首次登录 MiniMax / 番茄 | 说明登录态会存在本地、之后长期免登 |
+| 首次登录妙响（抖音） / 番茄 | 说明登录态会存在本地、之后长期免登 |
 | 任何短信验证码 | 明确说"验证码发到你手机，只有你能收" |
 | 电子合同签署 | 强调"签完 = 发布成功"，说明在哪个窗口操作 |
 | 页面停在未知状态 | 立刻说清楚卡在哪、需要用户做什么判断 |
@@ -114,7 +117,7 @@ agent_created: true
 原本的流程把**作者的登录态、手机号、歌单**都写死在脚本里，别人无法复用。
 本 skill 重构为「账户无关」：
 
-- **登录态不打包**：`profile/`（MiniMax）和 `profile_fanqie/`（番茄）在用户自己的工作目录里**首次运行时自动创建、初始为空**，由使用者用自己的账号登录。skill 仓库里绝不含有任何人的 cookie。
+- **登录态不打包**：`profile_douyin/`（妙响）和 `profile_fanqie/`（番茄）在用户自己的工作目录里**首次运行时自动创建、初始为空**，由使用者用自己的账号登录。skill 仓库里绝不含有任何人的 cookie。
 - **手机号不写死**：`fanqie_upload.py` 不再有 `PHONE = "..."`。想要自动填号+等验证码，用户在 `config.json` 写 `fanqie_phone` 或设环境变量 `FANQIE_PHONE`；不设则纯手动登录（最通用）。
 - **歌单不写死**：上传脚本改为**扫描 `library/` 子目录**，你生成过什么就发什么；已发布的靠工作目录里的 `published.json` 排除，每人的记录独立。
 - **签合同=发布**：填表+授权+跳转授权全自动，到合同签署页脚本停住，由使用者本人收验证码**签电子合同**（番茄没有「发布」按钮，签完即发布成功）。脚本检测到签署成功会自动写入 `published.json` 防重复；也可用 `--mark-published` 手动补记。
@@ -128,18 +131,19 @@ agent_created: true
 | 环节 | 谁做 | 频率 | 说明 |
 |---|---|---|---|
 | 安装依赖 | 🧑 人 | 一次性 | `pip install -r requirements.txt` + **`playwright install chromium`**（这步最常被漏） |
-| 首次登录 MiniMax | 🧑 人 | 一次性 | `generate.py --login`。登录态存**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/profile`（由 `scripts/paths.py` 解析，绝不在 skill 内），之后长期自动免登（Cookie 一般撑数周~数月，过期重跑一次即可） |
+| 首次登录妙响 | 🧑 人 | 一次性 | `miaoxiang.py --login`（或 `login_check.py douyin`）。登录态存**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/douyin`（由 `scripts/paths.py` 解析，绝不在 skill 内），之后长期自动免登（Cookie 一般撑数周~数月，过期重跑一次即可）。**用抖音账号登录** |
 | 首次登录番茄 | 🧑 人 | 一次性 | `fanqie_upload.py --login`，登录态存 `%LOCALAPPDATA%/music-workflow/profiles/profile_fanqie` |
 | 写歌单和歌词 | 🧑 人 | 每批歌 | `tasks.csv` + `lyrics/*.txt`（创作部分，当然得人来） |
 | **签电子合同** | 🧑 人 | 每批一次 | 需本人收**短信验证码**。番茄没有「发布」按钮，**签完 = 发布成功**。脚本开浏览器等你最多 30 分钟 |
 
-**全自动的部分**：生成音乐 → 下载 → 出封面 → 番茄 6 项填表（断点续传）→ 第一步下一步
+**全自动的部分**：生成音乐（妙响，1 份歌词出 2 版）→ 编辑导出 + 下载 → 出封面
+→ 番茄 6 项填表（断点续传）→ 第一步下一步
 → 独家授权 → 签约个人 → 确认签署 → 跳转授权 → 签完自动写入 `published.json` 防重复。
 
 ## 公开分发（已按 GitHub 开源标准备好）
 
 - `README.md`：仓库入口文档，含「哪些步骤需要人参与」表格、快速开始、排错表、隐私声明。
-- `.gitignore`：**已验证可拦住** `profile/`、`profile_fanqie/`、`_verify_profile/`、`storage_state*.json`、
+- `.gitignore`：**已验证可拦住** `profile*/`、`profile_fanqie/`、`profile_douyin/`、`_verify_profile/`、`storage_state*.json`、
   `published.json`、`library/`、`lyrics/`、日志与截图——防止使用者误把自己的登录凭证提交上去。
   （登录态现在本就存在每用户私有目录、不在 skill 内；.gitignore 作为双重保险，防回归。）
 - `LICENSE`：MIT。
@@ -170,9 +174,11 @@ music-workflow/
 ├── .gitignore             拦登录态/作品/日志（防误提交凭证）
 ├── SKILL.md
 ├── scripts/
-│   ├── generate.py        MiniMax 网页端批量生成 + 下载 + 自动出封面（含 --login）
-│   ├── miaoxiang.py       妙响（抖音）生成端：生成 → 编辑导出 → 下载，产出与 generate.py 同契约
-│   │                      （含 --login/--probe/--walk/--learn/--gen/--redownload/--download-mode/--model）
+│   ├── miaoxiang.py       ★ 主力生成端：妙响（抖音音乐创作实验室）生成 → 编辑导出 → 下载
+│   │                      产出与番茄端同契约（audio.mp3/lyrics.txt/cover.png/meta.json）
+│   │                      （含 --login/--probe/--walk/--learn/--gen/--redownload/
+│   │                        --download-mode/--model/--card/--workdir）
+│   ├── generate.py        ⚠️ 历史备选：MiniMax 网页端批量生成 + 下载 + 自动出封面（已停用，代码保留）
 │   ├── cover.py           封面生成器（1440×1440 PNG，纯本地 Pillow，零积分）
 │   ├── fanqie_upload.py   番茄上传：填表+授权+跳转授权（含 --login / --mark-published / --songs）
 │   ├── verify_published.py 番茄**只读**核对：去后台「成品发行」列表逐条核对发没发上去
@@ -205,17 +211,30 @@ music-workflow/
 
 ## 标准流程（按这个顺序执行）
 
-> 关键约定：脚本用 `ROOT = 脚本自身所在目录` 作为工作目录，所有数据（library/、profile*/、published.json、tasks.csv）都落在这里。
-> 所以**每一步都要先 cd 到工作目录再运行**，否则数据会散落。建议把 `scripts/` 整体复制到用户选定的工作目录（如 `./music-workflow/`），然后一直在那里操作。
+> **工作目录怎么定（2026-09-17 起统一为四层，别再用「脚本目录 == 工作目录」的老假设）**：
+> `--workdir 参数` > `MW_WORKDIR 环境变量` > `当前目录（有 tasks.csv 或 library/）` > 脚本自身所在目录。
+> 所有数据（`library/`、`profile*/`、`published.json`、`tasks.csv`、日志截图）都落在**工作目录**里；
+> 脚本目录只用来 import 兄弟模块。
+> **建议**：把 `scripts/` 整体复制到用户选定的工作目录（如 `./music-workflow/`），然后一直在那里操作；
+> 或者留在 skill 里、每次显式传 `--workdir <工作目录>`（两种都行，别混着来）。
+>
+> ⚠️ 历史坑：`fanqie_upload.py` 曾写死 `ROOT = 脚本所在目录`，导致用户在别处跑时
+> 它跑去找 `skills/music-workflow/scripts/library/...` → `WinError 3`，歌名还被记成目录名。
+> 已修（支持 `--workdir`）。**新增数据类路径时先问：它跟工作目录走吗？**
 
 ### 第 0 步：一键初始化工作目录并安装依赖
 1. 与用户确认工作目录（默认当前工作区下的 `music-workflow/`）。
-2. **一键初始化**（复制脚本 + 建空目录 `library/` `lyrics/` `profile/` `profile_fanqie/` + 空 `published.json` + `tasks.csv` 模板）：
+2. **一键初始化**（复制脚本 + 建空目录 `library/` `lyrics/` + 空 `published.json` + `tasks.csv` 模板）：
    ```
    <python> <skill>/scripts/init_workdir.py <工作目录>
    # 或只检查依赖：<python> <skill>/scripts/init_workdir.py --check
    ```
-   该脚本纯标准库、零额外依赖，且**绝不复制任何人的登录态**（profile*/ 初始为空）。
+   该脚本纯标准库、零额外依赖，且**绝不复制任何人的登录态**
+   （登录态现在存在系统每用户私有目录，不在工作目录里）。
+   > ⚠️ 它复制的脚本清单在 `init_workdir.py` 的 `COPY_FILES`。
+   > **新增「要用户自己跑的脚本」时必须同步加进去** —— 漏了在仓库里不会报错
+   > （本目录有全套文件），但用户 init 出来的工作目录会缺文件。
+   > 踩过两次：`popup_guard.py`（被 import 的模块）、`miaoxiang.py`（主力生成脚本）。
 3. 安装依赖（用托管 Python）：
    ```
    <python> -m pip install -r <工作目录>/requirements.txt
@@ -231,7 +250,7 @@ music-workflow/
 **优先用 `login_check.py`**（推荐，专治「点了登录没反应」）：
 ```bat
 cd <工作目录>
-<python> login_check.py minimax    # 登录 MiniMax（生成用）
+<python> login_check.py douyin     # 登录妙响·抖音音乐创作实验室（★ 主力生成端，用你的抖音账号）
 <python> login_check.py fanqie     # 登录 番茄音频创作平台（发布用）
 ```
 它比 `--login` 多做 4 件事，正是「点登录没反应」的常见解药：
@@ -243,14 +262,17 @@ cd <工作目录>
 
 备用方式（无反自动化检测，仅在 `login_check.py` 不可用时使用）：
 ```bat
-<python> generate.py --login        # 弹 MiniMax 页，用户登录（自动检测，无需回车）
+<python> miaoxiang.py --login       # 弹妙响资产页，用抖音账号登录（关掉窗口即完成）
 <python> fanqie_upload.py --login   # 弹番茄上传页，用户登录，看到「添加歌曲」即成功
 ```
-- 登录态存入**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/profile` 与 `.../profile_fanqie`
-  （由 `scripts/paths.py` 的 `user_profile()` 解析），绝不在 skill 文件夹或工作目录内——所以拷贝/分发
+- 登录态存入**系统每用户私有目录** `%LOCALAPPDATA%/music-workflow/profiles/douyin`（妙响）与
+  `.../profiles/profile_fanqie`（番茄）（由 `scripts/paths.py` 的 `user_profile()` 解析），
+  **既不在 skill 文件夹、也不在工作目录内**——所以拷贝/分发
   skill 不会带走任何人的账号，每个人第一次运行自己登录自己的。
+  > ⚠️ 妙响的 profile 名**必须是 `douyin`**（与 `miaoxiang.py` 的 `PROFILE_NAME` 一致），
+  > 否则登录检查与生成脚本会读两个不同的 profile，等于白登。
 - 若用户想在番茄用「自动填号+验证码」：在 `config.json` 加 `"fanqie_phone": "138..."` 或设 `FANQIE_PHONE` 环境变量；否则纯手动登录即可。
-- 之后若登录过期，重跑对应 `login_check.py <平台>` 即可；普通模式运行时若检测到未登录，也会自动打开浏览器等你手动登录。
+- 之后若登录过期，重跑对应 `login_check.py <平台>`（如 `douyin` / `fanqie`）即可；普通模式运行时若检测到未登录，也会自动打开浏览器等你手动登录。
 - 登录窗口最长等待 20 分钟；若用户的平台账号本来就是已登录状态，脚本会在几十秒内自动判定成功并关闭浏览器（属正常，不是出错）。
 
 ### 第 2 步：先问创作归属，再编辑歌单
@@ -263,28 +285,36 @@ cd <工作目录>
 | 混合 | 先确认分工边界（谁写词 / 谁定风格），再动笔 |
 
 确认后才让用户用 Excel 打开 `<工作目录>/tasks.csv`，每行一首（列：歌名,风格描述,歌词文件,生成数量,纯音乐）。
-- 生成数量=2 → 出 `歌名-01`（原版）和 `歌名-02`。想要第二版叫「歌名（动听版）」，生成后改
-  `<工作目录>/library/歌名-02/meta.json` 的 `title` 字段即可。
 - 歌词放 `<工作目录>/lyrics/歌名.txt`；留空=AI 自写。
+- **妙响端（主力）**：`生成数量` 这一列**不起作用** —— 平台规则是「1 份歌词点 1 次生成，
+  固定产出 2 个版本，数量不可改」（见 `GEN_VERSIONS_PER_LYRIC`）。
+  要几首就写几份不同歌词。两版的区分名会自动加：第 1 版 = 原歌名，第 2 版 = 原歌名`（动听版）`，
+  由 `version_display_title()` 统一处理，**不用手工改 meta.json**。
+- **MiniMax 备选端（已停用）**：那里 `生成数量=2` 是靠 `quantity_per_round` 控页面 stepper 实现的，
+  要手工区分两版名才需要改 `meta.json` 的 `title`。
 
-### 第 3 步：批量生成 + 下载 + 出封面
-```bat
-cd <工作目录>
-<python> generate.py
-```
-按歌单填表→点生成→嗅探音频链接下载→每首自动生成 1440×1440 PNG 封面，存进 `library/<歌名>-NN/`。
+### 第 3 步：批量生成 + 下载 + 出封面（★ 主力生成端 = 妙响）
 
-### 第 3 步·替代生成端：妙响（抖音音乐创作实验室，`scripts/miaoxiang.py`）
+**当前主力是妙响（抖音音乐创作实验室，`scripts/miaoxiang.py`）。**
+1 份歌词点 1 次「生成歌曲」→ 平台固定产出 **2 个版本**
+→ 逐版走「编辑导出」拿到可下载的导出件 → 自动生成 1440×1440 PNG 封面
+→ 存进 `library/<歌名>-NN/`。
 
-MiniMax 之外的第二个生成端。**产出的 `library/` 契约与 `generate.py` 完全一致**
-（`audio.mp3` / `lyrics.txt` / `cover.png` / `meta.json`），所以**番茄上传端一行都不用改**。
+**产出的 `library/` 契约与番茄端完全一致**（`audio.mp3` / `lyrics.txt` / `cover.png` / `meta.json`），
+所以**番茄上传端一行都不用改**。
 
 ```bat
 cd <工作目录>
 <python> <skill>/scripts/miaoxiang.py --login                    # 一次性：登录抖音（登录态在每用户私有目录）
 <python> <skill>/scripts/miaoxiang.py --gen --model "Sway v5.5" --download-mode both
 <python> <skill>/scripts/miaoxiang.py --redownload --song 歌名 --download-mode both   # 补下载，不重新生成
+<python> <skill>/scripts/miaoxiang.py --list-cards               # 只读列出卡片签名（补下载抄参数用）
 ```
+
+> **⚠️ 生成端已换：MiniMax → 妙响（2026-09 起）**
+> 早期用的 MiniMax 网页端（`scripts/generate.py`）**不再是默认路径**，
+> 代码保留作历史备选，文档见本节末尾「历史备选生成端」。
+
 
 **补下载的首选方式：显式指定卡片（`--card "卡片签名=歌名"`，可重复）**
 ```bat
@@ -292,7 +322,12 @@ cd <工作目录>
     --card "月照归期 03:22 · 2026-09-17 18:57=踏月寻你" ^
     --card "踏月寻你 03:02 · 2026-09-17 18:57=踏月寻你（动听版）"
 ```
-卡片签名从 `scripts/_diag_cards.py`（只读探针）打印的 `head90` 里抄。
+卡片签名用 `miaoxiang.py --list-cards` 列出来（**只读**，不点生成/导出/下载，零额度消耗）：
+```bat
+<python> <skill>/scripts/miaoxiang.py --list-cards --workdir <工作目录>
+```
+输出形如 `[ 3] (生成卡) 月照归期 03:22 · 2026-09-17 18:57`，整串（含 `·` 和日期时间）抄进 `--card`。
+**⚠️ 认卡要看时间戳** —— 那是**平台创建时间**，不是下载时间，别认错。
 **⚠️ 能指定就一定指定** —— 不指定时会退回「取最新 N 张」，2026-09-17 正是这个退路
 导致第 2 首入库了第 1 首的音频（见下）。
 
@@ -346,6 +381,23 @@ cd <工作目录>
 #   clicks.json（每次点击的坐标/aria/元素链）和 downloads.json（下载事件）
 ```
 录完把 `learnsession/run-*/` 交给 AI diff，即可把新步骤固化成自动化。
+
+#### 历史备选生成端：MiniMax 网页端（`scripts/generate.py`）· 已停用
+
+> **现状**：2026-09 起生成端换成妙响，**这条路径不再使用**。代码与文档保留，原因有二：
+> ① 万一妙响改版/额度受限，还有个能跑的备选；② 这段代码是「网页端自动化」的完整参考实现。
+> **新流程不要走这里。** 除非妙响明确不可用，否则一律用妙响。
+
+```bat
+cd <工作目录>
+<python> generate.py --login      # 一次性登录 MiniMax（登录态存 %LOCALAPPDATA%/music-workflow/profiles/profile）
+<python> generate.py              # 按 tasks.csv 填表 → 点生成 → 嗅探音频链接下载 → 出封面
+```
+它靠轮询 `https://www.minimaxi.com/v1/api/music/history_list` 拿音频链接
+（**生成完成后页面历史列表不刷新**，只有接口里有）。
+注意 `config.json` 的 `base_url` / `model`（`Music-3.0`）/ `selectors` **只服务于这个备选端**，
+妙响端有自己的一套（URL 写在 `miaoxiang.py` 顶部常量里），不走这个配置。
+排错见本文档「容错与排错 → MiniMax 侧（历史备选）」。
 
 ### 第 4 步：上传到番茄（填表+授权全自动，终点是签电子合同）
 ```bat
@@ -483,7 +535,26 @@ cd <工作目录>
 > **完整的历史踩坑记录见 `references/LEARNED.md`**（按时间倒序，含现象/根因/解法/验证）。
 > 排错前先翻一眼，很可能已经踩过；**解决新问题后必须回写那里**。
 
-### MiniMax 侧
+### 妙响侧（★ 当前主力生成端）
+
+- **「找不到卡片：」冒号后面是空的** —— 说明**卡片签名是空串**。
+  根因：资产页的**骨架卡**（还在渲染、`innerText=''`）被当成了新卡。
+  取卡一定要走 `CARDS_JS_STRICT`（只认「签名非空 **且** 含 `mm:ss` 或日期」的真卡），
+  `wait_new_cards` 与 `do_gen` 的 `before` 快照**必须用同一口径**，否则 diff 出来的是假新卡。
+  > 坑中坑：真卡文本**本身就含**「编辑器导出」四字，别再给它补这个后缀，
+  > 否则变成「…编辑器导出…编辑器导出」，前缀匹配反而断掉。
+- **「等了半天只有 N 张新卡」/ 卡片迟迟不出现** —— 平台生成要 5–6 分钟，
+  第 1 首如果没等到就直接进第 2 首，**第 1 首的卡会晚到并被第 2 首当成新卡**（张冠李戴）。
+  所以补下载**一律用 `--card` 显式指定**，别用「取最新 N 张」。
+- **「点了导出没反应 / 弹窗不出来」** —— 见下方「妙响侧踩坑」。
+- **下载张冠李戴（两首歌入库同一音频）** —— `save_song()` 的 MD5 防重护栏会拒收并提示，
+  看到这个提示说明导出卡定位错了，去查 `download_exported()` 的定位逻辑。
+- **浏览器窗口被关（`TargetClosedError`）** —— 脚本会检测 `ctx.pages` 并干净收尾，不再抛裸异常。
+  已入库的不会重复下，重跑即可（配合 `--card` 更稳）。
+
+### MiniMax 侧（历史备选，已停用）
+
+> 下面这些是 MiniMax 备选端的排错经验，**当前流程用不到**，留档参考。
 
 - **「找不到歌词输入框 / 找不到生成按钮」但元素明明存在**：
   多半是 **MiniMax 活动弹窗（如「Music 3.0 创作者内测」）** 全屏挡住。该弹窗用 `<section class="...z-[1050]...">` 做整屏遮罩，
@@ -571,8 +642,9 @@ cd <工作目录>
 7. 最后手段：删掉挡路的整屏遮罩（★ **默认关闭**，见下）
 
 **★ 它是怎么"认出"弹窗的（关键设计）★**
-光靠 class 名字猜弹窗容器注定有漏网的 —— MiniMax 的容器是 `section.responsive-modal z-[1050]`，
+光靠 class 名字猜弹窗容器注定有漏网的 —— 当年 MiniMax 的容器是 `section.responsive-modal z-[1050]`，
 压根不在标准 antd/arco 名单里，结果守卫连找都没往里找（这正是「卡在弹窗」的真正原因）。
+（该平台现已停用，但这个教训通用 —— 妙响那边同样有自定义浮层。）
 所以现在**双管齐下**：
 - **白名单容器**（`popup_roots` / `extra_popup_roots`）：已知的标准容器 + 用户补充的
 - **遮挡浮层**（`use_overlay_scope`，默认开）：凡是 `fixed/absolute + z-index≥100 + 覆盖≥40% 屏幕`
@@ -641,6 +713,10 @@ cd <工作目录>
 ## 与 ai-music-factory 的关系（已整合）
 
 `ai-music-factory` 已**废弃并改为指向本 skill**（`status: deprecated`，`deprecated_by: music-workflow`），
-不再维护、不再触发重复流程。其独有知识点（MiniMax 选择器、下载 5 坑、封面配色、番茄硬性要求、
+不再维护、不再触发重复流程。其独有知识点（下载 5 坑、封面配色、番茄硬性要求、
 MiniMax API 已关停、海绵音乐备选源）已并入 `references/USER_GUIDE.md`。
 本 `music-workflow` 是当前「生成 → 发布」的权威、唯一版本。
+
+> **生成端演进**：`ai-music-factory` 与 `music-workflow` 早期都走 **MiniMax 网页端**；
+> 2026-09 起改用**妙响（抖音音乐创作实验室）**为主力，MiniMax 代码保留为历史备选。
+> 因此本 skill 里凡是讲 MiniMax 的段落都标了「历史备选 / 已停用」，**当前流程请走妙响**。

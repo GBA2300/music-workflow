@@ -1398,7 +1398,7 @@ async def main():
         songs = [x.strip() for x in args.songs.split(",") if x.strip()]
     else:
         if not LIB_ROOT.exists():
-            log(f"找不到曲库目录 {LIB_ROOT}，请先运行 generate.py 生成歌曲")
+            log(f"找不到曲库目录 {LIB_ROOT}，请先运行 miaoxiang.py --gen 生成歌曲")
             return
         all_folders = [d.name for d in LIB_ROOT.iterdir() if d.is_dir()]
         songs = [f for f in all_folders if f not in published]
