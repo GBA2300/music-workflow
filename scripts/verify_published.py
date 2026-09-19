@@ -79,7 +79,14 @@ def log(m):
 
 
 def workdir() -> Path:
-    """工作目录：优先环境变量，其次 skill 下的默认目录。"""
+    """工作目录：环境变量 > config.json > 当前目录(有 tasks.csv) > skill 目录。
+
+    ⚠️ 2026-09-17 修：原来只认环境变量/config，跑在不带 MW_WORKDIR 的环境里时
+       会静默退回 skill 目录 —— 那里没有 `library/`，
+       于是 `folder_display_title()` 拿不到 meta.json、退回目录名，
+       导致 `踏月寻你-02` 被当成 `踏月寻你` 匹配（两行同 ID 的乌龙）。
+       → 加「当前目录有 tasks.csv 就是工作目录」这条自愈规则，与其他脚本一致。
+    """
     env = os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR")
     if env:
         return Path(env)
@@ -91,6 +98,9 @@ def workdir() -> Path:
                 return Path(d["workdir"])
         except Exception:
             pass
+    cwd = Path.cwd()
+    if (cwd / "tasks.csv").exists() or (cwd / "library").is_dir():
+        return cwd
     return ROOT
 
 
@@ -109,6 +119,28 @@ def library_folders() -> list[str]:
     if not lib.is_dir():
         return []
     return sorted(d.name for d in lib.iterdir() if d.is_dir())
+
+
+def folder_display_title(folder: str) -> str:
+    """把目录名映射成**平台上显示的歌名**。
+
+    目录是 `library/歌名-01` / `library/歌名-02`（番茄端按目录扫描），
+    但平台上的作品名取自 `meta.json` 的 `title`（第 2 版带「（动听版）」）。
+    直接拿目录名去匹配后台列表会张冠李戴（-01/-02 都命中同一行）。
+
+    ⚠️ 兜底也必须**去掉 `-01`/`-02` 后缀**，否则退回原文时仍会误匹配。
+    """
+    try:
+        meta = workdir() / "library" / folder / "meta.json"
+        if meta.is_file():
+            t = json.loads(meta.read_text(encoding="utf-8")).get("title")
+            if t:
+                return str(t).strip()
+    except Exception:
+        pass
+    # 兜底：去掉结尾的 -01 / -02（含半角/全角连字符），至少不误配短名
+    import re as _re
+    return _re.sub(r"[-－—]\d{1,2}$", "", folder).strip()
 
 
 def parse_rows(body: str) -> list[dict]:
@@ -221,12 +253,14 @@ async def main():
     print("核对目标：")
     ok_n = 0
     for t in targets:
-        # ★ 精确优先，其次包含匹配并取「最长的那个名字」。
-        #   （踩过坑：「心宽路就宽（动听版）」用 `r.name in t` 会被错配到
-        #    「心宽路就宽」那一行，因为短名是长名的子串。）
-        hit = next((r for r in rows if r["name"] == t), None)
+        # ⚠️ 2026-09-17 修：目标可能是**目录名**（`歌名-01` / `歌名-02`），
+        #   而后台列表里是**歌名**（`歌名` / `歌名（动听版）`）。
+        #   直接拿目录名去匹配，会让 -01 和 -02 双双命中同一行（本次就出现两行同 ID）。
+        #   → 先按目录的 meta.json 取真实歌名（这才是后台显示的名字），取不到再退回目录名。
+        want = folder_display_title(t)
+        hit = next((r for r in rows if r["name"] == want), None)
         if hit is None:
-            cands = [r for r in rows if t in r["name"] or r["name"] in t]
+            cands = [r for r in rows if want in r["name"] or r["name"] in want]
             if cands:
                 hit = max(cands, key=lambda r: len(r["name"]))
         if hit:

@@ -516,6 +516,19 @@ CARDS_JS = """() => Array.from(
   document.querySelectorAll('[class*="generatedSongListItem"]')
 ).map(el => (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90))"""
 
+# ⚠️ 2026-09-17 血泪修：`CARDS_JS` 会把**还在渲染的骨架卡**也吐出来（innerText=''）。
+#    批 3 第 1 首《踏月寻你》就是这样：卡片数量够了，但新卡签名全是空串
+#    → export_via_editor 拿 sig='' 去 locate_card_index，key 为空 → 报「找不到卡片：」
+#      （冒号后面什么都没有，就是这个特征）。
+#    修法：只要「签名非空 **且** 含 mm:ss / 日期」的真卡（骨架卡两者都没有）。
+#    ⚠️ 注意：真卡的 innerText 本身**已经含**「编辑器导出」四字（实测
+#      '同路一程又一程 编辑器导出 03:22 · 2026-09-17 19:04'），所以这里**不要**再补后缀，
+#      否则会变成「…编辑器导出…编辑器导出」，前缀匹配反而对不上。
+CARDS_JS_STRICT = """() => Array.from(
+  document.querySelectorAll('[class*="generatedSongListItem"]')
+).map(el => (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 90))
+ .filter(t => t.length > 0 && (/\\d{1,2}:\\d{2}/.test(t) || /\\d{4}-\\d{2}-\\d{2}/.test(t)))"""
+
 SET_LYRIC_JS = """([sel, text]) => {
   const el = document.querySelector(sel);
   if (!el) return -1;
@@ -731,8 +744,13 @@ def open_assets_and_tab(page):
 
 
 def wait_new_cards(page, before, need, max_min, poll=30):
-    """轮询资产页，等这一轮的新卡片够数。返回新卡片签名（ newest first）。"""
+    """轮询资产页，等这一轮的新卡片够数。返回新卡片签名（newest first）。
+
+    ⚠️ 2026-09-17 修：必须用 CARDS_JS_STRICT —— 宽松版会把骨架卡（innerText=''）
+       算进来，导致「够数了但签名是空串」，下游 export_via_editor 定位必失败。
+    """
     before_set = set(before)
+    last = []
     deadline = time.time() + max_min * 60
     while time.time() < deadline:
         page.reload(wait_until="domcontentloaded")
@@ -742,13 +760,26 @@ def wait_new_cards(page, before, need, max_min, poll=30):
             page.wait_for_timeout(2500)
         except Exception:
             pass
-        cur = page.evaluate(CARDS_JS)
+        cur = _cards_strict(page)
         new = [c for c in cur if c not in before_set]
+        last = new
         if len(new) >= need:
             return new
         log(f"  …新卡片 {len(new)}/{need}，继续等（每 {poll}s 一查，上限 {max_min} 分钟）")
         page.wait_for_timeout(poll * 1000)
-    return [c for c in page.evaluate(CARDS_JS) if c not in before_set]
+    try:
+        return [c for c in _cards_strict(page) if c not in before_set]
+    except Exception:
+        return last
+
+
+def _cards_strict(page):
+    """取「真卡」签名（骨架卡/空签名已被 JS 侧过滤掉）。"""
+    try:
+        rows = page.evaluate(CARDS_JS_STRICT)
+        return [r for r in rows if (r or "").strip()]
+    except Exception:
+        return [c for c in page.evaluate(CARDS_JS) if (c or "").strip()]
 
 
 def click_download(page):
@@ -813,15 +844,35 @@ def download_card(page, idx):
 #   ⋯ / 下载      卡片 [aria-label="更多操作"] / 下拉 文本=下载
 
 def locate_card_index(page, sig):
-    """按 CARDS_JS 的签名文本定位"原始生成卡"的序号；找不到返回 -1。"""
-    key = (sig or "").split(" 编辑器导出")[0].strip()[:60]
+    """按 CARDS_JS 的签名文本定位"原始生成卡"的序号；找不到返回 -1。
+
+    ⚠️ 2026-09-17 修：以前只做 startsWith 精确匹配，卡片文本稍有漂移（重新渲染后
+       多出「生成中」徽标、或 innerText 归一化后空格不同）就全盘失败。现在分三层：
+         ① 前缀精确匹配（startsWith 前 60 字）
+         ② 降级：剥离「· 时间」「时长」后的**歌名**做包含匹配
+         ③ 降级：歌名匹配多条时取第一条
+    """
+    key = (sig or "").split(" 编辑器导出")[0].strip()
     if not key:
-        return -1
+        raise RuntimeError(
+            "卡片签名为空——多半是 wait_new_cards 把骨架卡当成了新卡。"
+            "请检查 CARDS_JS_STRICT 是否生效（应为 _cards_strict 取卡）。")
     return page.evaluate(
         """(key) => {
-          const cards = [...document.querySelectorAll('[class*="generatedSongListItem"]')];
-          return cards.findIndex(c =>
-            ((c.innerText || '').replace(/\\s+/g, ' ').trim()).slice(0, 90).startsWith(key));
+          const norm = el => ((el.innerText || '').replace(/\\s+/g, ' ').trim());
+          const cards = [...document.querySelectorAll('[class*="generatedSongListItem"]')]
+                          .map((el, i) => ({i, t: norm(el)}))
+                          .filter(x => x.t.length > 0);
+          const head = key.slice(0, 60);
+          // ① 前缀精确
+          let hit = cards.find(x => x.t.slice(0, 90).startsWith(head));
+          if (hit) return hit.i;
+          // ② 用歌名（去掉「· 日期时间」和结尾 mm:ss）做包含匹配
+          const name = key.replace(/\\s*·\\s*\\d{4}-\\d{2}-\\d{2}.*$/, '')
+                          .replace(/\\s*\\d{1,2}:\\d{2}\\s*$/, '').trim();
+          if (!name) return -1;
+          hit = cards.find(x => x.t.includes(name));
+          return hit ? hit.i : -1;
         }""", key)
 
 
@@ -895,13 +946,31 @@ def export_via_editor(page, sig, title=None):
     title = (title or (sig or "").split(" ")[0]).strip()
     idx = locate_card_index(page, sig)
     if idx < 0:
-        raise RuntimeError(f"找不到卡片：{sig[:40]}")
+        raise RuntimeError(f"找不到卡片：{sig[:40]!r}（页面卡片数 {page.locator('[class*=\"generatedSongListItem\"]').count()}）")
     card = page.locator('[class*="generatedSongListItem"]').nth(idx)
     card.scroll_into_view_if_needed(timeout=5000)
-    card.hover(timeout=8000)
-    page.wait_for_timeout(600)
     # 卡片上的「编辑」（hover 才出现）
-    card.get_by_text("编辑", exact=True).first.click(timeout=8000)
+    # ⚠️ 2026-09-17 修：以前直接 get_by_text("编辑", exact=True).click() 一次，
+    #    实测会因为 hover 状态丢失 / 命中错节点而 8s 超时（批 3 第 1 版就死在这）。
+    #    现在分三层重试，并且每次都重新 hover 把按钮「唤」出来。
+    edit_ok = False
+    for attempt in range(3):
+        try:
+            card.scroll_into_view_if_needed(timeout=5000)
+            card.hover(timeout=8000)
+            page.wait_for_timeout(900)
+            # 优先用注释里记的真实类名，退回文本匹配
+            btn = card.locator('[class*="editMenuTrigger"]').first
+            if btn.count() == 0 or not btn.is_visible():
+                btn = card.get_by_text("编辑", exact=True).first
+            btn.click(timeout=6000)
+            edit_ok = True
+            break
+        except Exception as e:
+            log(f"    （第 {attempt + 1} 次点「编辑」没成功：{type(e).__name__}）")
+            page.wait_for_timeout(1500)
+    if not edit_ok:
+        raise RuntimeError(f"卡片「编辑」按钮点不动（卡片序 {idx}）")
     page.wait_for_timeout(1300)
     # 下拉里的「编辑器」
     page.locator('[class*="semi-dropdown-content"]').get_by_text(
@@ -949,33 +1018,77 @@ def export_via_editor(page, sig, title=None):
             log("    ! 没找到「歌曲名」输入框，导出件可能仍叫「新项目」")
     log("    · 导出弹窗已出，按默认「并轨导出」确认")
     page.locator('[class*="exportFooter"] button').filter(has_text="导出").first.click(timeout=8000)
-    # 等弹窗关闭 = 导出受理
+    # 等弹窗关闭 = 导出受理。
+    # ⚠️ 2026-09-17 修：这里超时**不代表失败** —— 平台导出要几分钟，弹窗可能一直挂着进度，
+    #    也可能被后续弹窗替换导致 `modal` 这个旧句柄永远等不到 hidden。
+    #    所以超时只记一笔，真正的「导出好了没」交给 download_exported 轮询新卡判断。
+    page.set_default_timeout(30000)
     try:
-        modal.wait_for(state="hidden", timeout=180000)
+        modal.wait_for(state="hidden", timeout=60000)
     except Exception:
-        log("    （等弹窗关闭超时，继续）")
-    page.wait_for_timeout(3000)
+        log("    （导出弹窗 60s 未关闭——不影响，改由「等新导出卡出现」判定）")
+    page.wait_for_timeout(2000)
 
 
-def download_exported(page, sig, title=None):
-    """回资产页，找那张带「编辑器导出」的卡 → ⋯ → 下载。返回 (tmp, 平台标题)。
+def download_exported(page, sig, title=None, before_exported=None, max_wait_min=6):
+    """回资产页，找**本次刚产出**的那张「编辑器导出」卡 → ⋯ → 下载。
 
-    title：这张导出件的名字（= 版本区分名，如「歌名（动听版）」），用于精确定位卡片。
+    title：这张导出件的名字（= 版本区分名，如「歌名（动听版）」）。
+
+    ⚠️⚠️ 2026-09-17 严重修复（张冠李戴 → 三个文件 MD5 完全相同）：
+       旧实现找不到同名卡时会 `cards.first` **静默兜底**，抓上一轮遗留的导出卡，
+       结果两首歌入库了同一个音频（实测三份文件 MD5 均 27efa0b8…）。
+       现在改为：
+         ① 先用 `title` 精确匹配；
+         ② 匹配不到就**等**（导出要几分钟），等到出现「不在 before_exported 里」的新卡；
+         ③ 实在等不到 → **报错**，绝不拿别的卡顶包。
+    before_exported：调用前已经存在的导出卡集合（用于识别「本次新增」）。
     """
     open_assets_and_tab(page)
     title = (title or (sig or "").strip().split(" ")[0]).strip()
-    cards = page.locator('[class*="generatedSongListItem"]', has_text="编辑器导出")
+    before = set(before_exported or [])
+
+    def exported_sigs():
+        try:
+            rows = page.evaluate(CARDS_JS_STRICT)
+            return [r for r in rows if "编辑器导出" in (r or "")]
+        except Exception:
+            return []
+
+    deadline = time.time() + max_wait_min * 60
     card = None
-    if title:
-        cand = cards.filter(has_text=title).first
-        if cand.count() > 0:
-            card = cand
+    why = ""
+    while True:
+        # ① 优先按我们填的歌名精确找（导出件名 = 我们填的 disp）
+        if title:
+            cand = page.locator(
+                '[class*="generatedSongListItem"]', has_text="编辑器导出").filter(
+                has_text=title)
+            if cand.count() > 0:
+                card = cand.first
+                why = f"按名匹配《{title}》"
+                break
+        # ② 退一步：本次新增的导出卡（before 里没有的）
+        new_exported = [s for s in exported_sigs() if s not in before]
+        if new_exported:
+            target = new_exported[0]
+            idx = locate_card_index(page, target)
+            if idx >= 0:
+                card = page.locator('[class*="generatedSongListItem"]').nth(idx)
+                why = f"按新增导出卡匹配（{target[:28]}）"
+                break
+        if time.time() >= deadline:
+            break
+        log(f"    …导出件还没出现，等 20s 再看（上限 {max_wait_min} 分钟）")
+        page.wait_for_timeout(20000)
+        open_assets_and_tab(page)
+
     if card is None:
-        cand = cards.first
-        if cand.count() > 0:
-            card = cand
-    if card is None:
-        raise RuntimeError("找不到「编辑器导出」卡片（导出可能还没完成）")
+        raise RuntimeError(
+            f"等不到本次的「编辑器导出」卡（{max_wait_min} 分钟内）——"
+            f"**拒绝拿别的卡顶包**，请检查平台导出是否完成")
+
+    log(f"    · 定位导出卡：{why}")
     card.scroll_into_view_if_needed(timeout=5000)
     card.hover(timeout=8000)
     page.wait_for_timeout(600)
@@ -1007,16 +1120,47 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
     lib.mkdir(parents=True, exist_ok=True)
     min_bytes = cfg.get("download", {}).get("min_audio_bytes", 200000)
     saved = []
+    seen_md5 = {}                      # md5 → folder，防同一音频被存成两首
     for i, it in enumerate(items):
         tmp, plat_title = it[0], it[1]
         disp_title = it[2] if len(it) > 2 and it[2] else version_display_title(task["title"], i)
-        folder = song_dir_for(task["title"], i, mode)
+        # ⚠️ 2026-09-17 修：version_index 以前用 enumerate 的 i，但某版失败时序号会错位，
+        #    出现「title=（动听版） 却 version_index=0」的矛盾记录。
+        #    → 改为**从 disp_title 反推**，它才是权威（带「（动听版）」就是第 2 版）。
+        v_idx = 1 if VERSION2_SUFFIX in disp_title else 0
+        folder = song_dir_for(task["title"], v_idx, mode)
         dest_dir = lib / folder
         dest_dir.mkdir(parents=True, exist_ok=True)
         size = tmp.stat().st_size
         if size < min_bytes:
             log(f"  ✗ {folder}：只有 {size} 字节（< {min_bytes}），像坏文件，跳过")
             continue
+        # ⚠️ 2026-09-17 新增防重护栏：批 3 曾把同一个音频存成两首歌
+        #    （三份文件 MD5 均 27efa0b8…）。入库前算 MD5，本批内撞了就拒收。
+        import hashlib
+        md5 = hashlib.md5(Path(tmp).read_bytes()).hexdigest()
+        if md5 in seen_md5:
+            log(f"  ✗ {folder}：音频与 {seen_md5[md5]} 完全相同（md5 {md5[:8]}）"
+                f"——疑似下载张冠李戴，**拒收**，请检查导出卡定位")
+            continue
+        # 再跟 library 里已存在的目录比一遍（跨批次也能拦）
+        dup_of = None
+        for other in lib.iterdir():
+            if not other.is_dir() or other.name == folder:
+                continue
+            oa = other / "audio.mp3"
+            if oa.exists() and oa.stat().st_size == size:
+                try:
+                    if hashlib.md5(oa.read_bytes()).hexdigest() == md5:
+                        dup_of = other.name
+                        break
+                except Exception:
+                    pass
+        if dup_of:
+            log(f"  ✗ {folder}：音频与已有 {dup_of} 完全相同（md5 {md5[:8]}）"
+                f"——**拒收**，请检查导出卡定位")
+            continue
+        seen_md5[md5] = folder
         dest = dest_dir / "audio.mp3"   # ⚠️ fanqie_upload.load_song 硬编码找 audio.mp3
         shutil.copyfile(str(tmp), str(dest))
         (dest_dir / "lyrics.txt").write_text(lyric, encoding="utf-8")
@@ -1032,7 +1176,7 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
             "platform": "miaoxiang",
             "platform_title": plat_title,  # 妙响自动起的名字，仅留档
             "model": model,                # 用的哪个模型（用户要求 Sway v5.5）
-            "version_index": i,
+            "version_index": v_idx,
         }
         (dest_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1062,8 +1206,25 @@ def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL)
     ctx, page = open_browser(p)
     page.set_default_timeout(30000)
     total = 0
+
+    def browser_alive():
+        """浏览器窗口被关掉（用户手动关 / 崩溃）时返回 False。
+
+        ⚠️ 2026-09-17 加：批 3 第 2 首第 2 版死在 TargetClosedError 上，
+           错误信息完全看不出「窗口被关了」，得靠这一层给出人话提示。
+        """
+        try:
+            return len(ctx.pages) > 0
+        except Exception:
+            return False
+
     try:
         for task in tasks:
+            if not browser_alive():
+                log("")
+                log("✗ 浏览器窗口已被关闭，剩下的歌不再执行。")
+                log("  （若是你手动关的：重新跑一次即可，已入库的不会重复下）")
+                break
             log("")
             log(f"──── 第 {task['no']} 首《{task['title']}》────")
             try:
@@ -1074,7 +1235,7 @@ def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL)
             log(f"  歌词 {len(lyric)} 字，来源 {task['lyrics_file']}")
 
             open_assets_and_tab(page)
-            before = page.evaluate(CARDS_JS)
+            before = _cards_strict(page)
             log(f"  生成前资产页已有 {len(before)} 张卡片")
 
             fill_create_page(page, lyric, task["style"], model)
@@ -1097,16 +1258,27 @@ def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL)
                 disp = version_display_title(task["title"], i)
                 log(f"  ── 第 {i+1} 版：{sig[:36]} → 命名《{disp}》──")
                 try:
+                    # 导出前先记下「已有哪些导出卡」，导出后只认新增的那张（防张冠李戴）
+                    try:
+                        _before_exp = [s for s in _cards_strict(page) if "编辑器导出" in s]
+                    except Exception:
+                        _before_exp = []
                     export_via_editor(page, sig, disp)
-                    tmp, _exported_card_name = download_exported(page, sig, disp)
+                    tmp, _exported_card_name = download_exported(
+                        page, sig, disp, before_exported=_before_exp)
                     # platform_title 要存**平台自动起的原名**（从原始生成卡签名取），
                     # 不是「编辑器导出」卡的名字（那是我们自己填的 disp，会跟 title 重复）
                     plat = platform_name_from_sig(sig) or _exported_card_name
                     items.append((tmp, plat, disp))
                 except Exception as e:
                     log(f"  ✗ 第 {i+1} 版失败：{type(e).__name__}: {e}")
+                    if not browser_alive():
+                        log("     ↑ 浏览器窗口没了，本首剩下的版本跳过")
+                        break
             if items:
                 total += len(save_song(workdir, cfg, task, lyric, mode, items, model))
+            elif not browser_alive():
+                break
     finally:
         try:
             ctx.close()
@@ -1136,9 +1308,18 @@ def platform_name_from_sig(sig):
     return s.strip()[:40]
 
 
-def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL):
-    """不重新生成，只把资产页「生成结果」里最新的 need 张卡片下载入库。
-    用于补救/验证下载环节（例如 egWPo9 那种「生成了但没下下来」的情况）。"""
+def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL, picks=None):
+    """不重新生成，只把资产页「生成结果」里指定的卡片走「编辑导出 → 下载」入库。
+
+    用于补救/验证下载环节（例如「生成了但没下下来」的情况）。
+
+    ⚠️ 2026-09-17 重写：以前是「取最新 need 张原始卡」，但批 3 证明这样会**张冠李戴** ——
+       第 1 首的卡晚到，被第 2 首的开盘快照当成本轮新卡，结果第 2 首入库了第 1 首的音频
+       （`meta.platform_title` 记成了「月照归期」就是铁证）。
+       → 现在必须**显式指定卡片签名**，一张一歌，不靠「最新 N 张」猜。
+
+    picks: [(卡片签名, 显示歌名), ...]。传 None 时退回旧行为（最新 need 张，仅调试用）。
+    """
     tasks = load_song_tasks(workdir, only_title)
     if not tasks:
         log("没有匹配的任务。")
@@ -1150,29 +1331,60 @@ def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL):
 
     log("")
     log("=" * 62)
-    log(f"补下载：{task['title']}  |  取「生成结果」最新 {need} 张卡片")
+    if picks:
+        log(f"按签名补下载：{task['title']}  |  指定 {len(picks)} 张卡片")
+    else:
+        log(f"补下载：{task['title']}  |  取「生成结果」最新 {need} 张卡片")
     log("=" * 62)
 
     ctx, page = open_browser(p)
     page.set_default_timeout(30000)
+
+    def alive():
+        try:
+            return len(ctx.pages) > 0
+        except Exception:
+            return False
+
     try:
         if not ensure_genresult_tab(page):
             log("  ✗ 没能切到「生成结果」tab，放弃")
             return
-        # 取最新 need 张"原始生成卡"（排除已带「编辑器导出」的），逐张走导出→下载
-        sigs = page.evaluate(CARDS_JS)
-        originals = [s for s in sigs if "编辑器导出" not in s][:need]
+        if picks:
+            plan = list(picks)
+        else:
+            sigs = _cards_strict(page)
+            originals = [s for s in sigs if "编辑器导出" not in s][:need]
+            plan = [(s, version_display_title(task["title"], i))
+                    for i, s in enumerate(originals)]
+
+        # 先把目标签名在页面上核对一遍，核不到的立刻报出来（不浪费导出额度）
+        present = _cards_strict(page)
+        for sig, disp in plan:
+            if not any(sig[:36] in p_ or p_[:36] in sig for p_ in present):
+                log(f"  ⚠ 页面上核不到这张卡：{sig[:48]!r}")
+
         items = []
-        for i, sig in enumerate(originals):
-            disp = version_display_title(task["title"], i)
-            log(f"  ── 第 {i+1} 版：{sig[:36]} → 命名《{disp}》──")
+        for i, (sig, disp) in enumerate(plan):
+            if not alive():
+                log("  ✗ 浏览器窗口没了，停止补下载")
+                break
+            log(f"  ── {i+1}/{len(plan)}：{sig[:36]} → 命名《{disp}》──")
             try:
+                try:
+                    _before_exp = [s for s in _cards_strict(page) if "编辑器导出" in s]
+                except Exception:
+                    _before_exp = []
                 export_via_editor(page, sig, disp)
-                tmp, _exported_card_name = download_exported(page, sig, disp)
+                tmp, _exported_card_name = download_exported(
+                    page, sig, disp, before_exported=_before_exp)
                 plat = platform_name_from_sig(sig) or _exported_card_name
                 items.append((tmp, plat, disp))
             except Exception as e:
-                log(f"  ✗ 第 {i+1} 版失败：{type(e).__name__}: {e}")
+                log(f"  ✗ 失败：{type(e).__name__}: {e}")
+                if not alive():
+                    log("     ↑ 浏览器窗口没了")
+                    break
         if items:
             saved = save_song(workdir, cfg, task, lyric, mode, items, model)
             log(f"  共入库 {len(saved)} 首 → {workdir / cfg.get('library_dir', 'library')}")
@@ -1197,8 +1409,12 @@ def main():
     ap.add_argument("--gen", action="store_true",
                     help="生成+下载（按 tasks.csv；生成前会问你要几个版本）")
     ap.add_argument("--redownload", action="store_true",
-                    help="不重新生成，只把资产页「生成结果」最新 N 张卡片补下载入库"
+                    help="不重新生成，只把资产页「生成结果」里指定/最新的卡片补下载入库"
                          "（补救「生成了但没下下来」）")
+    ap.add_argument("--card", action="append", default=None,
+                    help="配合 --redownload：显式指定卡片签名 → 显示歌名，格式 "
+                         "'卡片签名=显示歌名'，可重复。这是最可靠的补下载方式"
+                         "（不指定时才退回「最新 N 张」，有张冠李戴风险）")
     ap.add_argument("--workdir", default=None,
                     help="工作目录（含 tasks.csv / lyrics / library）；默认取当前目录")
     ap.add_argument("--song", default=None, help="只生成指定歌名的那一首")
@@ -1214,9 +1430,12 @@ def main():
                     help="--learn 从哪个页面开始录：create=创作页（默认）／"
                          "assets=资产页（只学「编辑导出→下载」这一段）")
     args = ap.parse_args()
+    if args.card:
+        args.redownload = True          # --card 天然属于补下载动作
 
     if not args.login and not args.probe and not args.walk \
-            and not args.learn and not args.gen and not args.redownload:
+            and not args.learn and not args.gen and not args.redownload \
+            and not args.card:
         ap.print_help()
         print("\n提示：第一次用先 --login，然后 --walk / --learn，熟悉后用 --gen。")
         return
@@ -1238,7 +1457,17 @@ def main():
         elif args.redownload:
             workdir = resolve_workdir(args.workdir)
             mode = ask_download_mode(args.download_mode)
-            do_redownload(p, workdir, mode, args.song, args.model)
+            picks = None
+            if args.card:
+                picks = []
+                for spec in args.card:
+                    if "=" not in spec:
+                        log(f"✗ --card 格式应为 '卡片签名=显示歌名'，收到：{spec!r}")
+                        return
+                    sig, disp = spec.split("=", 1)
+                    picks.append((sig.strip(), disp.strip()))
+                log(f"· 本次按 {len(picks)} 条显式卡片映射补下载")
+            do_redownload(p, workdir, mode, args.song, args.model, picks)
 
 
 if __name__ == "__main__":

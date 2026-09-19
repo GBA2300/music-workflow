@@ -54,7 +54,17 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
 
-ROOT = Path(__file__).resolve().parent          # 脚本所在目录 = 工作目录（所有数据都落在这里）
+SCRIPT_DIR = Path(__file__).resolve().parent     # 脚本所在目录（只用来 import 兄弟模块）
+# ⚠️⚠️ 2026-09-17 修（严重）：以前 `ROOT = 脚本目录`，导致**数据类路径全部指向 skill 内部**，
+#    用户在别处跑（--workdir / MW_WORKDIR）时，脚本跑去找
+#    `skills/music-workflow/scripts/library/踏月寻你-01/audio.mp3` → WinError 3 找不到路径，
+#    歌名也被连字符切坏（「踏月寻你-01」当成歌名）。
+#    现在：数据目录 = MW_WORKDIR 环境变量 > 当前工作目录(有 tasks.csv) > 脚本目录（向后兼容）。
+ROOT = Path(os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR") or "").expanduser() \
+    if (os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR")) else None
+if ROOT is None:
+    _cwd = Path.cwd()
+    ROOT = _cwd if (_cwd / "tasks.csv").exists() else SCRIPT_DIR
 LIB_ROOT = ROOT / "library"
 UPLOAD_URL = "https://www.novelfm.com/creator/music/finished/ugc/uploadProduct"
 PROFILE = user_profile("profile_fanqie")         # 每用户私有登录态（%LOCALAPPDATA%/music-workflow/profiles/），绝不在 skill 内
@@ -78,7 +88,7 @@ LAUNCH_ARGS = [
 ]
 
 import sys as _sys                                # noqa: E402
-_sys.path.insert(0, str(ROOT))                    # noqa: E402
+_sys.path.insert(0, str(SCRIPT_DIR))               # 兄弟模块在脚本目录，不在数据目录
 from popup_guard import (                         # noqa: E402
     a_guard_context,
     a_dismiss_popups,
@@ -1204,12 +1214,18 @@ async def step3_sign_contract(page, ctx, folders=None):
     last_hint = 0
     nudges = 0
     last_nudge = 0
-    # ★ 2026-09-12 用户反馈：「不需要重复跳新开多个页面，只需要打开一个签署页面」。
-    #   原来这里是每 30 秒无脑补点一次，且判断依据是**正文文字**——
-    #   飞书合同的 h5 页正文里本来就没有那些特征词，于是永远判定「还没到电子签」，
-    #   结果每 30 秒点一次「跳转授权」→ 多开一堆签署页（用户当场看到的就是这个）。
-    #   现在：① 用 URL 判断签署页是否已开；② 已开就绝不补点；③ 最多补点 1 次。
-    MAX_NUDGES = 1
+    # ⚠️⚠️ 2026-09-17 用户明确指出的新事实（脚本原来完全没考虑）：
+    #   **签署完成后，电子签页会自己跳走（回到登录页/首页），「签署成功」四个字就消失了。**
+    #   → 原来「只读正文找关键词」的策略必然错过：等你签完，页面上已经没那四个字了，
+    #     脚本就会一直打印「等待你完成签署」直到 30 分钟超时（本次就是这个现象）。
+    #   新增判据（任一命中即算签完）：
+    #     A. 正文出现 SIGN_DONE_KEYWORDS（没跳走时仍有效）
+    #     B. **签署页「消失」**：曾见过签署页（esign_seen=True），现在一个都不剩了
+    #        —— 且不是被我们自己关的（dedupe 只关重复的，至少留一个）
+    #     C. 签署页被跳成了登录页/首页（URL 不再含签署特征，且正文出现登录字样）
+    sign_seen_once = False
+    seen_sign_urls = set()
+    login_left_marks = ("重新登录", "请登录", "登录后", "手机号登录", "扫码登录")
     while time.time() < deadline:
         try:
             all_pages = list(ctx.pages)
@@ -1217,9 +1233,24 @@ async def step3_sign_contract(page, ctx, folders=None):
             all_pages = [page]
 
         # ① 已经有签署页（URL 判断）→ 视为已到位，且顺手把多开的关掉
-        esign_seen = bool(sign_pages(ctx))
+        sps = sign_pages(ctx)
+        esign_seen = bool(sps)
         if esign_seen:
+            sign_seen_once = True
+            for sp in sps:
+                try:
+                    seen_sign_urls.add((sp.url or "").split("?")[0])
+                except Exception:
+                    pass
             await dedupe_sign_tabs(ctx)
+
+        # ★ B 判据：签署页「全都消失了」= 签完跳走了（用户 2026-09-17 证实的行为）
+        if sign_seen_once and not esign_seen and not b_already_marked:
+            log("    ✓ 签署页已跳走（用户证实：签完会自动离开签署页）→ 判定签署完成")
+            if folders:
+                added = mark_published(list(folders))
+                log(f"    ✓ 已写入 published.json（防重复）：{added}")
+            return True
 
         for pg in all_pages:
             try:
@@ -1228,6 +1259,13 @@ async def step3_sign_contract(page, ctx, folders=None):
                 continue
             if any(k in body for k in SIGN_DONE_KEYWORDS):
                 log("    ✓ 检测到电子合同签署完成 → 发布成功")
+                if folders:
+                    added = mark_published(list(folders))
+                    log(f"    ✓ 已写入 published.json（防重复）：{added}")
+                return True
+            # ★ C 判据：曾经见过签署页，现在这一页变成了登录页 → 也是签完跳走
+            if sign_seen_once and any(k in body for k in login_left_marks):
+                log("    ✓ 签署页已变为登录页（用户证实：签完会跳回登录）→ 判定签署完成")
                 if folders:
                     added = mark_published(list(folders))
                     log(f"    ✓ 已写入 published.json（防重复）：{added}")
@@ -1287,7 +1325,21 @@ async def main():
                     help="只发布这些文件夹（逗号分隔）；默认发布 library/ 下未发布的全部")
     ap.add_argument("--headless", action="store_true",
                     help="无界面运行（不推荐，手动发布看不到窗口）")
+    ap.add_argument("--workdir", default=None,
+                    help="工作目录（含 library/ tasks.csv published.json）；"
+                         "默认取 MW_WORKDIR 环境变量 > 当前目录 > 脚本目录")
     args = ap.parse_args()
+
+    # ⚠️ 2026-09-17：--workdir 必须在任何数据路径使用之前生效。
+    #    这里重算全局 ROOT/LIB_ROOT/PUBLISHED_FILE/SMS_FILE/LOG_PATH。
+    global ROOT, LIB_ROOT, PUBLISHED_FILE, SMS_FILE, LOG_PATH
+    if args.workdir:
+        ROOT = Path(args.workdir).expanduser().resolve()
+        LIB_ROOT = ROOT / "library"
+        PUBLISHED_FILE = ROOT / "published.json"
+        SMS_FILE = ROOT / "_sms_code.txt"
+        LOG_PATH = ROOT / "_fanqie_log.txt"
+        log(f"工作目录（--workdir）：{ROOT}")
 
     # 清理残留浏览器（避免 lock 住 profile_fanqie，导致重跑失败）
     # ⚠️ 2026-09-12 重要改动：**不再 taskkill /f /im chrome.exe**！
