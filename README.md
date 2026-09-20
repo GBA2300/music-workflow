@@ -169,6 +169,8 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | **歌太多把 C 盘塞满了** | 一条命令换盘：`python miaoxiang.py --set-workdir "D:\music-workflow"`。以后生成/上传/核对全部自动跟着走，下载中转也一起挪（不再占系统临时目录）。已攒的歌用 `python migrate_library.py --to "D:\music-workflow"` 搬过去，**只复制不删除**，核对无误再 `--purge-only` |
 | 删完发现 C 盘**没腾出空间** | 正常：**回收站也在 C 盘**，扔进回收站只是「搬家」不是「腾空间」。加 `--empty-bin` 才真正释放：`python migrate_library.py --to "D:\music-workflow" --purge-only --empty-bin`（只清本次那几条，不动回收站里其它东西） |
 | 换盘后上传脚本说「没有待发布的新歌」 | 说明上传端没认到新位置。`fanqie_upload.py` / `verify_published.py` 已同步支持该设置；若仍不对，用 `--workdir` 显式指一次 |
+| **旧工作目录占着几个 G，想清掉** | 旧目录里的 `profile*`（历史登录态）动辄几百 MB，是**纯残值** —— 当前登录态在 `%LOCALAPPDATA%/music-workflow/profiles/`，不在工作目录里，所以删了**不用重新登录**。<br>⚠️ 但**分两步**：① 删目录 → ② 必须再清回收站 `python purge_bin.py --from-report "D:\music-workflow" --yes`，否则空间一点不释放。<br>⚠️ 删除命令要**在前台运行**，批量删除的授权提示只在会前台弹出来 |
+| 删完发现 C 盘**没腾出空间**（第二遍） | 除了回收站的原因，还有一层：WorkBuddy 主机会把脚本里的删除操作**自动改道到回收站**（`shutil.rmtree` 也只是「搬家」）。所以「删了」和「腾出空间」是**两件事**，中间必须夹一步清回收站。判据永远看磁盘实测差值 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
 | **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
 
@@ -247,6 +249,8 @@ music-workflow/
     │                        --workdir / --set-workdir）
     ├── migrate_library.py 曲库搬家：把散在系统盘的歌集中搬到别的盘
     │                      （--dry-run 预演 / --purge 校验通过后删源）
+    ├── purge_bin.py       清回收站里属于某目录的条目 —— 真正腾出磁盘空间
+    │                      （--from-report 按迁移报告 / --path 任意目录；默认 dry-run）
     ├── cover.py           封面生成器
     ├── fanqie_upload.py   番茄上传填表 + 授权（终点：签合同）
     ├── verify_published.py 发布结果**只读**核对（去后台逐条查发没发上去）
