@@ -118,14 +118,11 @@ python miaoxiang.py --set-workdir "D:\music-workflow"
 ### 已经攒在 C 盘的歌，怎么搬过去
 
 ```bat
-python migrate_library.py --to "D:\music-workflow" --dry-run   # 先看会搬什么，不复制
-python migrate_library.py --to "D:\music-workflow"             # 真正搬
-```
-
-搬完核对无误，要清掉 C 盘原件时再跑（**这一步不可逆，确认好再执行**）：
-
-```bat
-python migrate_library.py --to "D:\music-workflow" --purge
+python migrate_library.py --to "D:\music-workflow" --dry-run      # 先看会搬什么，不复制
+python migrate_library.py --to "D:\music-workflow"                # 真正搬（只复制，不删原件）
+python migrate_library.py --to "D:\music-workflow" --purge-only --verify-only   # 删前复核，只看不删
+python migrate_library.py --to "D:\music-workflow" --purge-only                 # 送进回收站（可还原）
+python migrate_library.py --to "D:\music-workflow" --purge-only --empty-bin      # 清掉回收站，真正腾空间
 ```
 
 **它怎么安排**：当前在用的那份曲库（有发布记录的）→ `D:\music-workflow\library\`；
@@ -136,6 +133,14 @@ python migrate_library.py --to "D:\music-workflow" --purge
 > `_archive/` 不在曲库扫描路径上，上传脚本看不见它，所以安全。
 
 搬完会生成 `D:\music-workflow\_迁移报告.json`，里面是每个目录的来历和目标位置。
+
+> ⚠️⚠️ **「送进回收站」不等于「腾出空间」—— 回收站也在 C 盘。**
+> 只做 `--purge-only` 时文件只是从 A 目录挪进回收站，C 盘占用**一点没少**
+> （实测还会略微上升）。要真正释放，必须再加 `--empty-bin` 把回收站里这几条清掉。
+> 所以顺序是：**先可还原地删 → 你确认 D 盘没问题 → 再 `--empty-bin` 真正删**。
+>
+> `--empty-bin` 只清**命中本次迁移路径**的那几条，不动你回收站里其它东西。
+> 删前会逐文件 MD5 复核源与目标，有一个对不上就**拒绝删除任何文件**。
 
 ---
 

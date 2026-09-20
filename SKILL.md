@@ -325,8 +325,10 @@ cd <工作目录>
 ```bat
 <python> <skill>/scripts/miaoxiang.py --set-workdir "D:\music-workflow"   # 一次设定，长期生效
 <python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --dry-run  # 已攒的歌先预演
-<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow"            # 再真搬
-<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --purge    # 核对无误后删源
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow"            # 真搬（只复制不删）
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --purge-only --verify-only  # 删前复核
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --purge-only                # 送回收站
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --purge-only --empty-bin     # 真正腾空间
 ```
 
 - 设置写在 `%LOCALAPPDATA%/music-workflow/settings.json`（`workdir` + `temp_dir`），**本机私有、不进仓库**
@@ -336,9 +338,14 @@ cd <工作目录>
   这样批量下载连峰值占用都不进系统盘
 - `fanqie_upload.py` / `verify_published.py` 的目录解析已同步认这个设置 ——
   否则会出现「生成端写 D 盘、上传端去 C 盘找 → 报没有待发布的新歌」
-- ⚠️ `migrate_library.py` **只复制不删除**，`--purge` 才删且必须先全部校验通过
 - ⚠️ **不要把历史曲库合并进主力曲库**：老歌可能早发布过但当时没有 `published.json` 记录，
   合并 → 上传脚本以为都没发过 → **重复投稿**。历史一律进 `_archive/`（不在扫描路径上）
+- ⚠️⚠️ **「送进回收站」不等于「腾出空间」—— 回收站也在同一块盘上。**
+  只 `--purge-only` 时文件只是从 A 目录挪进回收站，C 盘占用**一点没少**（实测还略升）。
+  必须再 `--empty-bin` 才真正释放。顺序：**可还原地删 → 确认 → 再永久删**。
+  `--empty-bin` 只清命中本次迁移路径的条目，不动用户回收站里其它东西
+- ⚠️ `--purge-only` 是「只删不拷」的独立动作。**别用重跑 `--purge` 来清理** ——
+  那会先复制一遍，而目标曲库已非空 → 搬出一堆 `library__dup2` 重复目录
 
 
 **补下载的首选方式：显式指定卡片（`--card "卡片签名=歌名"`，可重复）**
