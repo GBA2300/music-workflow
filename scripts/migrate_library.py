@@ -31,6 +31,9 @@ from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
+# 本脚本所在目录（= skill 的 scripts/），用于「源工作目录缺文件时从 skill 兜底拷一份」
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 
 # ─────────────────────── 删除：默认送回收站，不永久删 ───────────────────────
 # ⚠️ 原来这里用 shutil.rmtree —— 一旦删错就彻底没了。用户的作品是不可再生的，
@@ -558,11 +561,20 @@ def main():
     added = merge_published(primary["wd"], dest / "published.json")
     print(f"  ✓ 已发布记录：合并 {added} 条")
 
-    # 歌单/歌词也带过来（以后就在新目录开工）
-    for name in ("tasks.csv",):
+    # 歌单 / 配置也带过来（以后就在新目录开工）
+    # ⚠️ 2026-09-20 加 config.json：漏了它会踩「搬到新盘后 --gen 报
+    #    FileNotFoundError: <新目录>\config.json」，报错完全看不出跟迁移有关。
+    #    源目录可能也没有这个文件（恰恰说明它自己就是搬出来的），那就从本脚本所在目录
+    #    （skill 的 scripts/）兜底拷一份——config.json 是随 skill 分发的公共配置，不含隐私。
+    for name in ("tasks.csv", "config.json"):
+        dst_f = dest / name
+        if dst_f.exists():
+            continue
         s = primary["wd"] / name
-        if s.exists() and not (dest / name).exists():
-            shutil.copyfile(str(s), str(dest / name))
+        if not s.exists():
+            s = SCRIPT_DIR / name
+        if s.exists():
+            shutil.copyfile(str(s), str(dst_f))
             print(f"  ✓ 带过来 {name}")
     sl = primary["wd"] / "lyrics"
     if sl.is_dir() and not (dest / "lyrics").exists():

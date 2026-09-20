@@ -171,6 +171,10 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | 换盘后上传脚本说「没有待发布的新歌」 | 说明上传端没认到新位置。`fanqie_upload.py` / `verify_published.py` 已同步支持该设置；若仍不对，用 `--workdir` 显式指一次 |
 | **旧工作目录占着几个 G，想清掉** | 旧目录里的 `profile*`（历史登录态）动辄几百 MB，是**纯残值** —— 当前登录态在 `%LOCALAPPDATA%/music-workflow/profiles/`，不在工作目录里，所以删了**不用重新登录**。<br>⚠️ 但**分两步**：① 删目录 → ② 必须再清回收站 `python purge_bin.py --from-report "D:\music-workflow" --yes`，否则空间一点不释放。<br>⚠️ 删除命令要**在前台运行**，批量删除的授权提示只在会前台弹出来 |
 | 删完发现 C 盘**没腾出空间**（第二遍） | 除了回收站的原因，还有一层：WorkBuddy 主机会把脚本里的删除操作**自动改道到回收站**（`shutil.rmtree` 也只是「搬家」）。所以「删了」和「腾出空间」是**两件事**，中间必须夹一步清回收站。判据永远看磁盘实测差值 |
+| **`--gen` 报 `FileNotFoundError: '<工作目录>\config.json'`** | 妙响**不读**这个文件（它只服务已停用的 MiniMax 备选端），缺它不影响运行。已修：读不到就按默认值继续。若你也想补齐这个文件，从 skill 的 `scripts/` 拷一份到工作目录即可 |
+| **搬到新盘后 `--gen` 就报上一条** | 老版本的 `migrate_library.py` 建新工作目录时只带 `tasks.csv`/`lyrics/`，**漏了 `config.json`**。已修：现在搬目录会连 `config.json` 一起带过去（源目录没有就从 skill 里兜一份） |
+| **核对脚本报 `TargetClosedError ... launch_persistent_context`** | 上传脚本跑完**故意保持浏览器打开**，占着 `profile_fanqie`，而核对脚本用同一个登录态目录 → 起不来（那行 chromium 日志是乱码，看不出真因）。**先清理再核对**：`python browser_utils.py` → `python verify_published.py` |
+| **核对完打了「全绿」，但刚发的那批没在里面** | 老版本 `--recent` 取的是 `published.json` 的**末尾 4 条**，而那个数组是**按字母排序**的 → 取到的是字母表末尾的歌。已修：改成按曲库目录**落盘时间**取最新 N 条，并显式打印「本次只核对最近 N 条（共 M 条）」。**核对前先确认清单里真有刚发的歌**，或用 `--songs "歌名-01,歌名-02"` 点名 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
 | **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
 

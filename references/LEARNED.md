@@ -1229,3 +1229,186 @@ def disk(root):   # 返回 (free, total)
 > ④ **用户说「全清掉」不等于就不能备份。** 7 MB 的备份换来零风险，永远值得。
 > ⑤ **登录态的位置要查清再删旧目录** —— 这次差点把「以为在旧目录里」的
 >   `profile` 当成资产的附属品，查证后才知道它是纯残值。
+
+---
+
+## 2026-09-20 · 妙响生成 · `--gen` 一开跑就 `FileNotFoundError: '<工作目录>\config.json'`
+
+- **现象**：用户要求「检验推到 GitHub 的 skill 是否可靠，创作两首歌并发布」。
+  首次真跑 `miaoxiang.py --gen`，**1 秒就崩**，栈底是：
+  ```
+  File "miaoxiang.py", line 1223, in do_gen
+      cfg = json.loads((workdir / "config.json").read_text(encoding="utf-8"))
+  FileNotFoundError: [Errno 2] No such file or directory: 'D:\\music-workflow\\config.json'
+  ```
+  报错信息里**没有任何一个字**能提示「这跟妙响有没有关系」——
+  用户看到只会以为妙响坏了，或者以为要自己手建一个未知格式的 json。
+- **根因（两层，缺一不可）**：
+  1. **多余的限制**：`do_gen()` 硬读 `workdir/config.json`。但这个文件**开头第一行**就写着
+     `"_说明": "⚠️ 本文件只服务【MiniMax 历史备选端】（generate.py），该端已于 2026-09 停用。
+     当前主力生成端是妙响（miaoxiang.py），妙响用固定选择器、不读本文件。"`
+     —— **文件自己声明妙响不读它，代码却硬读**。
+     而且 `cfg` 在 `miaoxiang.py` 里通篇只用 `.get()` 带默认值：
+     `cfg.get("library_dir", "library")` / `cfg.get("lyrics_dir", "lyrics")` /
+     `cfg.get("download", {}).get("min_audio_bytes", 200000)`。
+     **缺文件完全不影响运行**，纯粹是把「可选配置」写成了「必需文件」。
+  2. **文件确实没被带到新目录**：`D:\music-workflow` 是**前两天用 `migrate_library.py --to` 搬出来的**，
+     而 `migrate_library.py` 建新工作目录时只带了 `library/` / `published.json` /
+     `tasks.csv` / `lyrics/` —— **`config.json` 不在搬运清单里**。
+     （它只出现在 `init_workdir.py` 的 `COPY_FILES`，而这条路径根本没跑过 init。）
+  > **触发条件**：`migrate_library.py --to <新盘目录>` 之后，在**新目录**直接 `--gen`。
+  > 也就是「用户说『歌能放 D 盘吗』→ 搬完 → 下次就在 D 盘干活」这条**最主流的路径**。
+- **解法（两处都改，只改一处都不算修好）**：
+  1. `miaoxiang.py` 新增 `load_config(workdir)`，**读不到就返回 `{}` 并打印一行提示**，
+     `do_gen` 与 `do_redownload` 的调用点全部换掉：
+     ```python
+     def load_config(workdir):
+         p = Path(workdir) / "config.json"
+         try:
+             return json.loads(p.read_text(encoding="utf-8"))
+         except FileNotFoundError:
+             log(f"提示：{p} 不存在，按默认配置继续"
+                 f"（妙响不读它；缺省 library_dir=library、lyrics_dir=lyrics）")
+             return {}
+         except Exception as e:
+             log(f"⚠️ {p} 解析失败（{e}），按默认配置继续")
+             return {}
+     ```
+     —— 这不是新发明，是**对齐 `login_check.py` 已有的同一套做法**
+     （那儿注释就写着「读不到就返回空字典」）。同一个仓库里两种口径，本身就是隐患。
+  2. `migrate_library.py` 搬目录时把 `config.json` 一起带过去；
+     **源目录也没有就从脚本所在目录兜底拷一份**（新增模块级 `SCRIPT_DIR = Path(__file__).resolve().parent`），
+     因为「源目录也没有」恰恰是「它自己就是搬出来的」的标志：
+     ```python
+     for name in ("tasks.csv", "config.json"):
+         dst_f = dest / name
+         if dst_f.exists():
+             continue
+         s = primary["wd"] / name
+         if not s.exists():
+             s = SCRIPT_DIR / name      # 兜底：skill 的 scripts/
+         if s.exists():
+             shutil.copyfile(str(s), str(dst_f))
+             print(f"  ✓ 带过来 {name}")
+     ```
+- **验证**：
+  - 两文件 `py_compile` 均通过。
+  - `grep -n "load_config\|config.json" miaoxiang.py` → 定义在 1218 行，
+    调用点 1248 / 1379，**再无裸 `json.loads(...config.json...)`**。
+  - 补齐 `D:\music-workflow\config.json`（5418 字节）后重跑 `--gen`，
+    日志直接走完「创作页已打开 → 切专业模式 → 选模型 Sway v5.5 → 填词 345 字 / 曲风 48 字 →
+    ✓ 已点『生成歌曲』→ 等待生成（约 5–6 分钟）」，**不再崩**。
+- **来源**：自己 debug（本次「检验 skill 可靠性」任务真实暴露的第 1 个 bug）
+
+> **教训**：
+> ① **「配置文件」要分清真可选还是真必需。** 如果读它的代码**全程带默认值**，
+>   那它就不是依赖，是覆盖项 —— 写成 `read_text()` 硬读等于给自己埋雷。
+>   **判断方法：grep 一下 `cfg`，看有没有哪次调用是不带 `.get()` 默认值的。**
+> ② **一个文件「谁负责带来」要有唯一答案。** `config.json` 只在 `init_workdir.py` 的
+>   `COPY_FILES` 里，而 `migrate_library.py` 会造出**新的工作目录**却不带它
+>   → 造目录的路径有两条，文件却只登记在一条上。
+>   **凡是「会新建工作目录」的脚本，都必须把「新目录要有什么」对齐 `init_workdir.py`。**
+> ③ **报错信息要能指向真凶。** `FileNotFoundError: 'D:\music-workflow\config.json'`
+>   把用户引向「我要建个 config.json」，而真凶其实是**迁移脚本漏拷文件**。
+>   给用户的兜底提示必须写清「这不影响运行」。
+> ④ **同一个仓库里同类动作有两种写法 = 迟早出事。**
+>   `login_check.py` 早就容忍缺 config.json，`miaoxiang.py` 却硬读 —— 统一口径本身就是修 bug。
+
+---
+
+## 2026-09-20 · 后台核对 · 「最近 4 条」取的是字母表末尾 → 刚发布的歌一条没查，还打了「4/4 全绿」
+
+- **现象**：刚发完《回头就是家》两版（10:14 签署完成，published.json 已写入 2 条），
+  立刻跑 `verify_published.py`（纪律 3 要求的动作）。输出：
+  ```
+  核对目标：
+    ✓ 越过越有奔头-01  [已上架] ID 7684574855944997912
+    ✓ 越过越有奔头-02  [已上架] ID 7684574855944997912   ← 两行同 ID
+    ✓ 踏月寻你-01      [已上架] ID 7686464567844555838
+    ✓ 踏月寻你-02      [已上架] ID 7686464567848733758
+  结果：4/4 在后台列表里
+  ```
+  **刚发的《回头就是家-01/-02》根本不在核对清单里**，工具却给了个漂亮的「4/4」。
+- **根因（两个独立缺陷叠在一起）**：
+  1. **「最近」是假的**：取目标是 `published_folders()[-args.recent:]`，默认 `--recent 4`。
+     但 `published.json` 的 `folders` 数组**是按字母顺序存进去的**（写入时就排了序），
+     不是插入顺序 —— `[-4:]` 拿到的自然是**字母表末尾**那四首
+     （越过越有奔头-01/-02、踏月寻你-01/-02），跟「最近发布」毫无关系。
+  2. **「包含匹配」取了最长名**：`越过越有奔头-01` 的 meta.json 若取不到标题，
+     兜底会剥掉 `-01` 变成「越过越有奔头」；后台没有这一行，于是走模糊匹配
+     `max(cands, key=lambda r: len(r["name"]))` —— **取名字最长的候选**，
+     正好命中「越过越有奔头（动听版）」→ -01 和 -02 双双拿到-02 的 ID。
+     （这是 `LEARNED.md` 里 2026-09-17 那个「两行同 ID」乌龙的**翻版**，上轮只修了
+     「目录名 vs 歌名」，没修「包含匹配取最长」这条路径。）
+- **为什么这个 bug 比不核对更危险**：纪律 3 存在的唯一理由就是「不许自证」。
+  结果**判据工具本身会给出假绿** —— 它把「我没查到」伪装成了「我查过了，没问题」。
+  用户看到「4/4 全绿」会认为整批都核过了，**恰好在最需要告警的那次失明**。
+- **解法（`verify_published.py`）**：
+  1. 新增 `recent_folders(n)` —— 按 `<workdir>/library/<folder>` 的 **mtime** 排序取最新 N 个
+     （目录已归档的用 `meta.json` 的 `generated_at` 兜底），`--recent` 改用它。
+  2. 模糊匹配改成**取「长度最接近 want」的候选，且长度差 ≤ 3 才认**；
+     差太多就打印 `?` 标为**不确定**（附上候选名和 ID 让人工判断），**不计入 ok_n**。
+  3. 显式打印**覆盖范围**：`⚠️ 本次只核对最近 N 条（published.json 共 M 条）`。
+  4. `✗` 的分支补一句「本工具只读当前已加载的列表，作品多时请去后台翻页确认」。
+- **验证**（复跑同一命令）：
+  ```
+  ⚠️ 覆盖范围：本次只核对最近 4 条（published.json 共 18 条）；要全查用 --all，要指定用 --songs
+  核对目标：
+    ✓ 同路一程又一程-01  [已上架] ID 7686464567852944446
+    ✓ 同路一程又一程-02  [已上架] ID 7686464567852928062
+    ✓ 回头就是家-01     [审核中] ID 7687433842222713880
+    ✓ 回头就是家-02     [审核中] ID 7687433842226908184
+  ```
+  → 刚发的两首**进了清单**，四个 ID **互不相同且对得上**，覆盖范围写明。
+- **来源**：自己 debug（「检验 skill 可靠性」任务真实暴露的第 3 个 bug）
+
+> **教训**：
+> ① **「最近 N 条」不能依赖「列表顺序」**，除非你确认那个列表就是按时间写的。
+>   本项目的 `published.json` 是按字母排序的 JSON 数组 —— 拿它当时间序，错得毫无征兆。
+>   **要时间序就去读时间戳（文件 mtime / 记录里的 generated_at），别猜列表语义。**
+> ② **模糊匹配取「最长候选」是个陷阱**：带后缀的变体名（`X（动听版）`）永远比本体长，
+>   于是本体永远匹配到变体。**正确做法是取「最接近的长度」，或者干脆不猜、报不确定。**
+> ③ **核对工具必须报告自己的覆盖范围。** 一个会说「4/4 全绿」却只看了 4 条的核对工具，
+>   比没有核对工具更糟 —— **纪律 3 的价值完全依赖「它真的看了该看的东西」**。
+> ④ **修 bug 要修「这一类」，不是「这一处」。** 上轮修了「目录名 vs 歌名」，
+>   却漏了同一条链上的「包含匹配」—— 同款乌龙两周内复现。**顺着数据流走完整条路再收工。**
+
+---
+
+## 2026-09-20 · 后台核对 · 上传端浏览器占着登录态目录 → 核对脚本直接起不来（纪律 3 被卡住）
+
+- **现象**：跑完 `fanqie_upload.py` 后立刻跑 `verify_published.py`，3 秒即崩：
+  ```
+  playwright._impl._errors.TargetClosedError: BrowserType.launch_persistent_context:
+  Target page, context or browser has been closed
+  Browser logs: ...
+  <launched> pid=556
+  [pid=556][out] �������е�������Ự�д򿪡�      ← 乱码，实为「在现有的浏览器会话中打开」
+  ```
+- **根因**：`fanqie_upload.py` 结束时**有意保持浏览器打开**（SKILL.md 第 4 步就这么写的：
+  「✓ 脚本运行结束，浏览器保持打开……若已自动发布：可直接关闭窗口」）——
+  它占着 `%LOCALAPPDATA%/music-workflow/profiles/profile_fanqie`。
+  而 `verify_published.py` 用**同一个 user-data-dir**，Playwright 不允许同一 profile 双开 → 启动即失败。
+  报错文本**完全看不出是「profile 被占用」**（那行关键信息是 GBK 乱码）。
+- **为什么值得记**：这直接卡死了**纪律 3**（发布后必须只读核对）。
+  而纪律 3 的触发时机恰恰是「刚跑完上传脚本」—— 也就是**必然踩中**。
+- **解法**：先跑一次 `browser_utils.py`（它以 `__main__` 形式提供了标准清理）：
+  ```bat
+  <python> <skill>/scripts/browser_utils.py   :: → 「已清理 11 个本工具的 Playwright 浏览器进程」
+  <python> <skill>/scripts/verify_published.py
+  ```
+  `browser_utils.kill_browsers()` **按 exe 完整路径匹配，只杀路径含 `ms-playwright` 的**，
+  用户自己的 Chrome（`C:\Program Files\Google\Chrome\...`）绝不会被碰。
+  另外 `clear_profile_locks()` 会删 `SingletonLock/Cookie/Socket` 三个锁文件。
+  已写进 SKILL.md 第 6 步的显式提醒。
+- **验证**：清理后同一 profile 立刻能启动，核对 16 秒跑完并给出正确结果。
+- **来源**：自己 debug（「检验 skill 可靠性」任务真实暴露的第 4 个 bug）
+
+> **教训**：
+> ① **同一 profile 的脚本不能在前一个进程没退出时启动** —— 这是 Playwright 的硬限制，
+>   但报错信息**不会告诉你原因**（尤其非英文 locale 下关键行还是乱码）。
+>   **凡是要跑第二个同 profile 的脚本，先 kill 再 launch。**
+> ② **「跑完保留窗口」这个便利设计，会和「发布后必须核对」这个纪律打架。**
+>   两个各自正确的设计放在一起 = 流程断点。**便利设计和强制流程的交互要专门走一遍。**
+> ③ **别用 `taskkill /im chrome.exe` 图省事** —— 历史上真把用户自己的 Chrome 杀过。
+>   有 `browser_utils` 这种精确匹配的工具就一定要用它。

@@ -33,7 +33,7 @@
 
 用法
 ────
-    # 核对 published.json 里记录的歌（默认：最近 4 条）
+    # 核对最近发布的歌（默认：按曲库目录落盘时间取最新 4 条）
     python verify_published.py
 
     # 核对指定歌名（逗号分隔，支持模糊包含匹配）
@@ -131,6 +131,45 @@ def library_folders() -> list[str]:
     return sorted(d.name for d in lib.iterdir() if d.is_dir())
 
 
+def recent_folders(n: int) -> list[str]:
+    """取「最近发布」的 n 个目录 —— 按**曲库目录的落盘时间**排，不按 published.json 的位置。
+
+    ⚠️ 2026-09-20 修（这是个会让纪律 3 失效的坑）：
+    原先这里是 `published_folders()[-n:]`，默认 `--recent 4`。
+    但 `published.json` 里的 `folders` 是**按字母排序**存的（不是写入顺序！），
+    所以 `[-4:]` 取到的是「字母表末尾」那几首，跟「最近」毫无关系。
+
+    实测现场：2026-09-20 刚发布《回头就是家-01/-02》并写入 published.json，
+    再跑核对 —— 它去查的却是《越过越有奔头-01/-02》《踏月寻你-01/-02》
+    （字母末尾），**刚发的那批一条都没查**，最后还打了「4/4 在后台列表里」。
+    → **核对工具自己给出了「全绿」的假结论**，比不核对更危险：
+      它会把「没查到」伪装成「查过了、没问题」。
+
+    现在改成按 `library/<folder>` 的 mtime 排序取最新 n 个。
+    目录已不在曲库里的（归档/搬走）用 meta.json 的 `generated_at` 兜底，再不行排最后。
+    """
+    folders = published_folders()
+    if not folders:
+        return []
+    lib = workdir() / "library"
+
+    def _mtime(f: str) -> float:
+        d = lib / f
+        try:
+            return d.stat().st_mtime
+        except Exception:
+            pass
+        try:
+            meta = d / "meta.json"
+            return datetime.strptime(
+                json.loads(meta.read_text(encoding="utf-8"))["generated_at"],
+                "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return 0.0
+
+    return sorted(folders, key=_mtime)[-n:]
+
+
 def folder_display_title(folder: str) -> str:
     """把目录名映射成**平台上显示的歌名**。
 
@@ -193,7 +232,9 @@ async def main():
     ap.add_argument("--songs", default="", help="要核对的歌名，逗号分隔")
     ap.add_argument("--all", action="store_true", help="核对 library/ 下全部文件夹")
     ap.add_argument("--list-only", action="store_true", help="只打印列表")
-    ap.add_argument("--recent", type=int, default=4, help="默认核对 published.json 最近 N 条")
+    ap.add_argument("--recent", type=int, default=4,
+                    help="默认核对最近发布的 N 条（按 library/<目录> 的落盘时间排序，"
+                         "不是按 published.json 的列表位置——那个是按字母排的）")
     ap.add_argument("--profile", default="profile_fanqie", help="用的浏览器 profile 名")
     args = ap.parse_args()
 
@@ -203,7 +244,7 @@ async def main():
     elif args.songs:
         targets = [s.strip() for s in args.songs.split(",") if s.strip()]
     else:
-        targets = published_folders()[-args.recent:]
+        targets = recent_folders(args.recent)
     if args.list_only:
         targets = []
 
@@ -260,8 +301,17 @@ async def main():
     if not targets:
         return 0
 
+    # ⚠️ 2026-09-20 加：显式声明「这次只看了多少条」。
+    #   原先静默只查 4 条、却打「4/4 全绿」，用户会以为整批都核过了。
+    #   覆盖范围必须写在脸上。
+    _total_pub = len(published_folders())
+    if len(targets) < _total_pub:
+        print(f"⚠️ 覆盖范围：本次只核对最近 {len(targets)} 条（published.json 共 {_total_pub} 条）；"
+              f"要全查用 --all，要指定用 --songs")
+
     print("核对目标：")
     ok_n = 0
+    unsure_n = 0
     for t in targets:
         # ⚠️ 2026-09-17 修：目标可能是**目录名**（`歌名-01` / `歌名-02`），
         #   而后台列表里是**歌名**（`歌名` / `歌名（动听版）`）。
@@ -269,10 +319,22 @@ async def main():
         #   → 先按目录的 meta.json 取真实歌名（这才是后台显示的名字），取不到再退回目录名。
         want = folder_display_title(t)
         hit = next((r for r in rows if r["name"] == want), None)
+        unsure = ""
         if hit is None:
             cands = [r for r in rows if want in r["name"] or r["name"] in want]
             if cands:
-                hit = max(cands, key=lambda r: len(r["name"]))
+                # ⚠️ 2026-09-20 修：原来取「名字最长」的候选 ——
+                #   want=「越过越有奔头」会命中更长的「越过越有奔头（动听版）」，
+                #   于是 -01 拿到了 -02 的 ID（两行同 ID，正是 LEARNED.md 记过的乌龙翻版）。
+                #   改成取**长度最接近** want 的候选，且长度差 ≤ 3 才认；
+                #   差太多说明只是「名字包含」而非同一首 —— 宁可标不确定，也不瞎指 ID。
+                cands.sort(key=lambda r: abs(len(r["name"]) - len(want)))
+                best = cands[0]
+                if abs(len(best["name"]) - len(want)) <= 3:
+                    hit = best
+                else:
+                    unsure = (f"⚠️ 只找到名字相近的「{best['name']}」（ID {best['id']}），"
+                              f"不敢当成同一首 —— 请去后台确认这两首的对应关系")
         if hit:
             r = hit
             ok_n += 1
@@ -284,10 +346,15 @@ async def main():
             elif r["status"] in ("未通过", "审核不通过"):
                 extra = "  ← ⚠️ 审核未通过，需要处理"
             print(f"  ✓ {t:<26} [{r['status']}] ID {r['id']}{extra}")
+        elif unsure:
+            unsure_n += 1
+            print(f"  ? {t:<26} {unsure}")
         else:
-            print(f"  ✗ {t:<26} 列表里没找到 —— 可能没发布成功，或还没刷新出来")
+            print(f"  ✗ {t:<26} 列表里没找到 —— 可能没发布成功，或还没刷新出来"
+                  f"（本工具只读当前已加载的列表，作品多时请去后台翻页确认）")
     print("=" * 70)
-    print(f"结果：{ok_n}/{len(targets)} 在后台列表里")
+    tail = f"，另有 {unsure_n} 条无法确定" if unsure_n else ""
+    print(f"结果：{ok_n}/{len(targets)} 在后台列表里{tail}")
     return 0 if ok_n == len(targets) else 1
 
 

@@ -1215,12 +1215,37 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
     return saved
 
 
+def load_config(workdir):
+    """读工作目录的 config.json；**读不到就返回 {}**，不报错。
+
+    ⚠️ 2026-09-20 修：原先这里是硬读 —— `json.loads((workdir/"config.json").read_text())`。
+    但 config.json 自己的 `_说明` 就写着「本文件只服务 MiniMax 历史备选端，
+    妙响用固定选择器、不读本文件」，而 cfg 在本文件里**通篇只用 .get() 带默认值**
+    （library_dir / lyrics_dir / download.min_audio_bytes），所以缺文件根本不影响运行。
+
+    实测踩坑：`D:\\music-workflow` 是 migrate_library.py 搬出来的目录、没跑过
+    init_workdir.py（config.json 只在 init 的 COPY_FILES 里），于是 `--gen` 直接
+    `FileNotFoundError: 'D:\\music-workflow\\config.json'` —— 报错看不出跟妙响有什么关系，
+    用户完全不知道该建什么文件。对齐 login_check.py 的同一套做法（「读不到就返回空字典」）。
+    """
+    p = Path(workdir) / "config.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        log(f"提示：{p} 不存在，按默认配置继续"
+            f"（妙响不读它；缺省 library_dir=library、lyrics_dir=lyrics）")
+        return {}
+    except Exception as e:
+        log(f"⚠️ {p} 解析失败（{e}），按默认配置继续")
+        return {}
+
+
 def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL):
     tasks = load_song_tasks(workdir, only_title)
     if not tasks:
         log("没有待生成的任务（tasks.csv 里没有非「示例-」开头的行）。")
         return
-    cfg = json.loads((workdir / "config.json").read_text(encoding="utf-8"))
+    cfg = load_config(workdir)
     need = GEN_VERSIONS_PER_LYRIC if mode == DOWNLOAD_MODE_BOTH else 1
 
     log("")
@@ -1351,7 +1376,7 @@ def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL, picks=
         log("没有匹配的任务。")
         return
     task = tasks[0]
-    cfg = json.loads((workdir / "config.json").read_text(encoding="utf-8"))
+    cfg = load_config(workdir)
     need = GEN_VERSIONS_PER_LYRIC if mode == DOWNLOAD_MODE_BOTH else 1
     lyric = load_lyrics(workdir, cfg.get("lyrics_dir", "lyrics"), task["lyrics_file"])
 

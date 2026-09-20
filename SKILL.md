@@ -605,6 +605,29 @@ cd <工作目录>
 
 > ⚠️ **「审核中」不是失败，也不是没发布。** 签完合同立刻看后台就是「审核中」。
 > 实测：`回家喊一声妈` 16:54 创建 → 17:10 上架；`越过越有奔头` 17:15 创建 → 17:31/17:38 上架。
+> 2026-09-20 复测：`回头就是家` / `回头就是家（动听版）` 10:09 创建 → 状态「审核中」。
+
+> ⚠️⚠️ **核对之前先关掉上传端浏览器（否则这一步根本跑不起来）** —— 2026-09-20 实测。
+> `fanqie_upload.py` 跑完会**保持浏览器打开**（方便用户签合同），而
+> `verify_published.py` 用的是**同一个 `profile_fanqie` 登录态目录**。
+> Playwright 不允许同一个 user-data-dir 双开 → 核对脚本报
+> `TargetClosedError: BrowserType.launch_persistent_context: Target page, context or browser has been closed`
+> （chromium 那行日志是乱码的「…浏览器会话中打开」，看不出真因）。
+> **解法**（顺序别反）：
+> ```bat
+> <python> <skill>/scripts/browser_utils.py     :: 杀掉本工具自己的 Playwright 浏览器（按 ms-playwright 路径精确匹配，不碰用户的 Chrome）
+> <python> <skill>/scripts/verify_published.py
+> ```
+> 别用 `taskkill /im chrome.exe` —— 会连用户自己正在用的 Chrome 一起杀掉（2026-09-12 真实事故）。
+
+> ⚠️ **`--recent` 默认只覆盖最近 4 条，且现在会显式打出「覆盖范围」**（2026-09-20 修）。
+> 原先 `[-4:]` 是取 `published.json` 的**末尾 4 条**，但那个 `folders` 数组是**按字母排序**存的
+> （不是写入顺序）→ 取到的是「字母表末尾」的歌，**刚发的那批一条都没查**，最后还打「4/4 全绿」。
+> **核对工具给出假绿 = 比不核对更危险**：它把「没查到」伪装成「查过了」。
+> 现在改为按 `library/<目录>` 的**落盘时间**排序取最新 N 条，并显式打印
+> 「本次只核对最近 N 条（published.json 共 M 条）」。
+> **发布完当场核对时，务必确认清单里真的包含刚发的那几首**；不确定就用
+> `--songs "歌名-01,歌名-02"` 点名核对。
 
 ## 容错与排错
 
@@ -613,6 +636,18 @@ cd <工作目录>
 
 ### 妙响侧（★ 当前主力生成端）
 
+- **`FileNotFoundError: '<工作目录>\config.json'`（`--gen` 一开跑就崩）** ——
+  `do_gen()` 原先**硬读** `workdir/config.json`。但 config.json 自己的 `_说明` 就写着
+  「本文件只服务 MiniMax 历史备选端，妙响用固定选择器、不读本文件」，
+  而且 cfg 通篇只用 `.get()` 带默认值 → **缺这个文件根本不影响运行，纯粹是多余的限制**。
+  最容易踩的路径是「**先 `migrate_library.py --to` 搬到新盘，再在新目录 `--gen`**」：
+  迁移脚本当时只带 `tasks.csv` / `lyrics/`，**没带 `config.json`**。
+  > 已修两处（2026-09-20）：① `miaoxiang.py` 新增 `load_config()` ——
+  > 读不到就返回 `{}` 并打印一行提示（对齐 `login_check.py` 的同一套做法），
+  > 调用点 `do_gen` / `do_redownload` 全部改用它；
+  > ② `migrate_library.py` 搬目录时把 `config.json` 一起带过去，
+  > 源目录也没有就从脚本所在目录兜底拷一份。
+  > **排查口诀**：妙响报错里出现 `config.json` = 工作目录缺文件，不是妙响的问题。
 - **「找不到卡片：」冒号后面是空的** —— 说明**卡片签名是空串**。
   根因：资产页的**骨架卡**（还在渲染、`innerText=''`）被当成了新卡。
   取卡一定要走 `CARDS_JS_STRICT`（只认「签名非空 **且** 含 `mm:ss` 或日期」的真卡），
