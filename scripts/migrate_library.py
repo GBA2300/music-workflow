@@ -274,10 +274,12 @@ def do_purge_only(target: Path, hard: bool, verify_only: bool = False,
     print()
 
     # ── 阶段一：全部复核，全通过才动手（不做「删一半发现有问题」）
-    src_libs = []
+    src_libs = []          # 还存在于磁盘上、需要删的
+    all_src_libs = []      # 报告里记录的全部源路径（含已删的，--empty-bin 需要）
     all_ok = True
     for label, src_wd, dst_lib in pairs:
         src_lib = src_wd / "library"
+        all_src_libs.append(src_lib)
         ok, msg = verify_pair(src_lib, dst_lib)
         mark = "✓" if ok else "✗"
         print(f"  {mark} [{label}] {src_wd}")
@@ -295,7 +297,17 @@ def do_purge_only(target: Path, hard: bool, verify_only: bool = False,
 
     if not src_libs:
         print()
-        print("  没有可删的源目录（可能已经清过了）。")
+        print("  磁盘上的源目录已经清完了。")
+        if also_empty_bin:
+            # ⚠️ 这一步很关键：源目录已不存在，但回收站里可能还留着它们。
+            #    不能因为「没东西可删」就提前 return，否则 --empty-bin 永远不生效。
+            print("  继续执行 --empty-bin：把回收站里属于这些路径的条目标永久清掉。")
+            n, freed = empty_bin_for(all_src_libs)
+            print()
+            print(f"  清掉 {n} 个条目，实际释放 {freed/1024**2:.1f} MB")
+            print("  只动了这几个命中的条目，回收站里其它东西没碰。")
+        else:
+            print("  （如果 C 盘空间还没腾出来，说明它们还在回收站里 —— 加 --empty-bin 再跑）")
         return 0
 
     total = sum(sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
@@ -344,12 +356,13 @@ def do_purge_only(target: Path, hard: bool, verify_only: bool = False,
         print(f"  顺带清理了 {shells} 个残留空目录（0 字节，rmdir 只删空目录）")
 
     # 阶段三：把刚扔进回收站的这些条目标永久删掉，真正释放空间
-    if also_empty_bin and done:
+    if also_empty_bin and (done or all_src_libs):
         print()
         print("=" * 70)
         print("--empty-bin：清掉回收站里对应的条目（永久删除，不可还原）")
         print("=" * 70)
-        n, freed = empty_bin_for(done)
+        # 用 all_src_libs 而不是 done：有的目录可能上一轮就删了、只要还在回收站里也要一起清
+        n, freed = empty_bin_for(all_src_libs)
         print(f"  清掉 {n} 个条目，实际释放 {freed/1024**2:.1f} MB")
         print("  只动了这几个命中的条目，回收站里其它东西没碰。")
 
