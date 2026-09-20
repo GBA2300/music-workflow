@@ -54,6 +54,7 @@ COPY_FILES = [
     "miaoxiang.py",        # ★ 主力生成端（妙响 / 抖音音乐创作实验室）
     "cover.py",            # 封面生成（被 miaoxiang.py / generate.py 调用）
     "migrate_library.py",  # 把散落的曲库搬到别的盘（省系统盘）
+    "purge_bin.py",        # 清回收站里属于某目录的条目（真删才腾空间；见 SKILL.md 存储章节）
     "fanqie_upload.py",
     "init_workdir.py",
     "verify_published.py",  # 发布结果只读核对（纪律 3）
