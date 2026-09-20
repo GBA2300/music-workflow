@@ -91,6 +91,54 @@ python fanqie_upload.py --login
 
 ---
 
+## 二之三、把歌曲存到别的盘（不占系统盘）★
+
+批量下载的音频 + 封面会越攒越多（实测 45 首 ≈ 300 MB），默认全落在系统盘（C 盘）。
+**一条命令就能把它挪到 D 盘，以后所有脚本自动跟着走，不用加任何参数：**
+
+```bat
+python miaoxiang.py --set-workdir "D:\music-workflow"
+```
+
+它会：建好 `library/` `lyrics/` `.tmp/` → 从 skill 拷一份歌单模板 → 把位置写进本机设置
+→ 打印新路径和 D 盘剩余空间给你核对。**只建目录、不动任何已有歌曲。**
+
+设置文件在 `%LOCALAPPDATA%/music-workflow/settings.json`（本机私有，不会跟着仓库分发）：
+
+```json
+{
+  "workdir":  "D:\\music-workflow",
+  "temp_dir": "D:\\music-workflow\\.tmp"
+}
+```
+
+> 为什么要连 `.tmp` 一起挪：下载时音频会**先落到中转目录再进曲库**，
+> 中转目录默认也在 C 盘。一起挪走，批量下载连峰值占用都不进系统盘。
+
+### 已经攒在 C 盘的歌，怎么搬过去
+
+```bat
+python migrate_library.py --to "D:\music-workflow" --dry-run   # 先看会搬什么，不复制
+python migrate_library.py --to "D:\music-workflow"             # 真正搬
+```
+
+搬完核对无误，要清掉 C 盘原件时再跑（**这一步不可逆，确认好再执行**）：
+
+```bat
+python migrate_library.py --to "D:\music-workflow" --purge
+```
+
+**它怎么安排**：当前在用的那份曲库（有发布记录的）→ `D:\music-workflow\library\`；
+其余历史目录 → `D:\music-workflow\_archive\<来源>\`。
+
+> ⚠️ 为什么不干脆全合到一个曲库里：老目录里的歌**可能早就发布过**，只是当时还没有
+> `published.json` 记录。一股脑合并 → 上传脚本会以为「都没发过」→ **重复投稿**。
+> `_archive/` 不在曲库扫描路径上，上传脚本看不见它，所以安全。
+
+搬完会生成 `D:\music-workflow\_迁移报告.json`，里面是每个目录的来历和目标位置。
+
+---
+
 ## 三、日常使用
 
 ### 1）写歌单 `tasks.csv`

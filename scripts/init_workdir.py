@@ -7,6 +7,7 @@ music-workflow —— 一键初始化工作目录
   <工作目录>/
     miaoxiang.py          ★ 主力生成端：妙响（抖音音乐创作实验室）生成+下载+出封面（含 --login）
     generate.py           ⚠️ 历史备选端：MiniMax 网页端（已停用，仅救急回退用）
+    migrate_library.py    把曲库从系统盘搬到别的盘（含 --dry-run / --purge）
     cover.py              封面生成器
     paths.py              登录态目录解析（每用户私有，保证账号不外泄）
     browser_utils.py      跨平台浏览器清理（Windows/macOS/Linux 通用）
@@ -52,6 +53,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 COPY_FILES = [
     "miaoxiang.py",        # ★ 主力生成端（妙响 / 抖音音乐创作实验室）
     "cover.py",            # 封面生成（被 miaoxiang.py / generate.py 调用）
+    "migrate_library.py",  # 把散落的曲库搬到别的盘（省系统盘）
     "fanqie_upload.py",
     "init_workdir.py",
     "verify_published.py",  # 发布结果只读核对（纪律 3）
@@ -150,6 +152,11 @@ def main():
     print("   2) {0} miaoxiang.py --login          # 用你的抖音账号登录妙响".format(py_exe))
     print("   3) {0} fanqie_upload.py --login     # 用你的番茄账号登录".format(py_exe))
     print("   然后编辑 tasks.csv，运行 miaoxiang.py --gen 生成，再 fanqie_upload.py 上传。")
+    print("")
+    print("   想把曲库放到别的盘（比如 D:，免得占系统盘）：")
+    print("     {0} miaoxiang.py --set-workdir \"D:\\\\music-workflow\"".format(py_exe))
+    print("   已经攒了一堆歌在系统盘、想搬过去：")
+    print("     {0} migrate_library.py --to \"D:\\\\music-workflow\" --dry-run".format(py_exe))
 
 
 if __name__ == "__main__":

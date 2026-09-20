@@ -79,13 +79,15 @@ def log(m):
 
 
 def workdir() -> Path:
-    """工作目录：环境变量 > config.json > 当前目录(有 tasks.csv) > skill 目录。
+    """工作目录：环境变量 > config.json > 设置文件(settings.json) > 当前目录(有 tasks.csv) > skill 目录。
 
     ⚠️ 2026-09-17 修：原来只认环境变量/config，跑在不带 MW_WORKDIR 的环境里时
        会静默退回 skill 目录 —— 那里没有 `library/`，
        于是 `folder_display_title()` 拿不到 meta.json、退回目录名，
        导致 `踏月寻你-02` 被当成 `踏月寻你` 匹配（两行同 ID 的乌龙）。
        → 加「当前目录有 tasks.csv 就是工作目录」这条自愈规则，与其他脚本一致。
+    ⚠️ 2026-09-20 补：把 `--set-workdir` 写的设置文件也纳入，否则曲库挪到 D 盘后
+       本工具会又跑回 C 盘 skill 目录去找，正是上面那个乌龙的翻版。
     """
     env = os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR")
     if env:
@@ -98,6 +100,14 @@ def workdir() -> Path:
                 return Path(d["workdir"])
         except Exception:
             pass
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from paths import default_workdir
+        d = default_workdir()
+        if d is not None:
+            return d
+    except Exception:
+        pass
     cwd = Path.cwd()
     if (cwd / "tasks.csv").exists() or (cwd / "library").is_dir():
         return cwd

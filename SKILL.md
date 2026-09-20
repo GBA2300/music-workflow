@@ -177,7 +177,10 @@ music-workflow/
 │   ├── miaoxiang.py       ★ 主力生成端：妙响（抖音音乐创作实验室）生成 → 编辑导出 → 下载
 │   │                      产出与番茄端同契约（audio.mp3/lyrics.txt/cover.png/meta.json）
 │   │                      （含 --login/--probe/--walk/--learn/--gen/--redownload/
-│   │                        --download-mode/--model/--card/--workdir）
+│   │                        --download-mode/--model/--card/--workdir/--set-workdir）
+│   ├── migrate_library.py 曲库搬家：把散在系统盘各处的 library 集中搬到别的盘
+│   │                      （含 --dry-run 预演 / --purge 校验通过后删源；主力进
+│   │                        library/、历史进 _archive/，避免已发布老歌被重复投稿）
 │   ├── generate.py        ⚠️ 历史备选：MiniMax 网页端批量生成 + 下载 + 自动出封面（已停用，代码保留）
 │   ├── cover.py           封面生成器（1440×1440 PNG，纯本地 Pillow，零积分）
 │   ├── fanqie_upload.py   番茄上传：填表+授权+跳转授权（含 --login / --mark-published / --songs）
@@ -314,6 +317,28 @@ cd <工作目录>
 > **⚠️ 生成端已换：MiniMax → 妙响（2026-09 起）**
 > 早期用的 MiniMax 网页端（`scripts/generate.py`）**不再是默认路径**，
 > 代码保留作历史备选，文档见本节末尾「历史备选生成端」。
+
+#### 存储位置：曲库默认放系统盘，可一键挪到数据盘
+
+批量下载会很快把系统盘塞满（实测 45 首 ≈ 300 MB）。**用户说「歌曲能不能放 D 盘」时走这条：**
+
+```bat
+<python> <skill>/scripts/miaoxiang.py --set-workdir "D:\music-workflow"   # 一次设定，长期生效
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --dry-run  # 已攒的歌先预演
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow"            # 再真搬
+<python> <skill>/scripts/migrate_library.py --to "D:\music-workflow" --purge    # 核对无误后删源
+```
+
+- 设置写在 `%LOCALAPPDATA%/music-workflow/settings.json`（`workdir` + `temp_dir`），**本机私有、不进仓库**
+- 解析优先级：`--workdir` 参数 > settings.json > 当前目录(含 tasks.csv) > 脚本目录
+  （**settings.json 高于「当前目录」是有意的** —— 用户设完「都放 D 盘」后，在哪儿敲命令都该落 D 盘）
+- **下载中转也跟着走**：`miaoxiang.py` 的下载先落 `<workdir>/.tmp/`（原来是系统 TEMP），
+  这样批量下载连峰值占用都不进系统盘
+- `fanqie_upload.py` / `verify_published.py` 的目录解析已同步认这个设置 ——
+  否则会出现「生成端写 D 盘、上传端去 C 盘找 → 报没有待发布的新歌」
+- ⚠️ `migrate_library.py` **只复制不删除**，`--purge` 才删且必须先全部校验通过
+- ⚠️ **不要把历史曲库合并进主力曲库**：老歌可能早发布过但当时没有 `published.json` 记录，
+  合并 → 上传脚本以为都没发过 → **重复投稿**。历史一律进 `_archive/`（不在扫描路径上）
 
 
 **补下载的首选方式：显式指定卡片（`--card "卡片签名=歌名"`，可重复）**

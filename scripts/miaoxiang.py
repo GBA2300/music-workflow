@@ -48,7 +48,9 @@ sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright  # noqa: E402
 
-from paths import user_profile  # noqa: E402
+from paths import (  # noqa: E402
+    user_profile, default_workdir, work_temp_dir, settings_file, save_settings,
+)
 from browser_utils import clear_profile_locks, window_args, viewport_for  # noqa: E402
 
 MX_URL = "https://music.douyin.com/studio?panel=my-assets"
@@ -540,14 +542,38 @@ SET_LYRIC_JS = """([sel, text]) => {
 }"""
 
 
+# 本次实际使用的曲库目录。resolve_workdir() 里设一次，给「下载中转目录」用——
+# 这样无论靠 --workdir 还是靠设置文件选中的目录，下载中的临时文件都落在同一块盘上，
+# 不会出现「曲库在 D 盘、下载峰值却把 C 盘写满」。
+_ACTIVE_WORKDIR = None
+
+
+def _dl_tmp_dir():
+    """下载中转目录：跟着本次实际使用的曲库目录走。"""
+    return work_temp_dir(_ACTIVE_WORKDIR)
+
+
 def resolve_workdir(arg=None):
-    """决定任务表/歌词/素材目录：--workdir > 当前目录(有 tasks.csv) > 脚本目录。"""
+    """决定任务表/歌词/曲库目录。
+
+    优先级：--workdir 参数 > settings.json 里的 default workdir
+            > 当前目录(有 tasks.csv) > 脚本目录
+
+    ⚠️ settings.json 的优先级**高于**「当前目录」是有意的：用户设过一次
+    「我东西都放 D 盘」之后，无论在哪个目录敲命令，曲库都该落在 D 盘，
+    否则批量下载又会悄悄写满 C 盘（这正是 2026-09-20 用户提的问题）。
+    """
+    global _ACTIVE_WORKDIR
     if arg:
-        return Path(arg).expanduser().resolve()
-    cwd = Path.cwd()
-    if (cwd / "tasks.csv").exists():
-        return cwd
-    return ROOT
+        _ACTIVE_WORKDIR = Path(arg).expanduser().resolve()
+    else:
+        cfg_dir = default_workdir()
+        if cfg_dir is not None:
+            _ACTIVE_WORKDIR = cfg_dir.expanduser().resolve()
+        else:
+            cwd = Path.cwd()
+            _ACTIVE_WORKDIR = cwd if (cwd / "tasks.csv").exists() else ROOT
+    return _ACTIVE_WORKDIR
 
 
 def load_song_tasks(workdir, only_title=None):
@@ -821,7 +847,7 @@ def download_card(page, idx):
     if dl is None:
         raise RuntimeError(f"第 {idx} 张卡片点不出下载")
     log(f"    ✓ 触发下载（{how}）：{dl.suggested_filename}")
-    tmp = Path(tempfile.mkdtemp()) / dl.suggested_filename
+    tmp = Path(tempfile.mkdtemp(dir=str(_dl_tmp_dir()))) / dl.suggested_filename
     dl.save_as(str(tmp))
     page.keyboard.press("Escape")
     page.wait_for_timeout(600)
@@ -1099,7 +1125,7 @@ def download_exported(page, sig, title=None, before_exported=None, max_wait_min=
     if dl is None:
         raise RuntimeError("「编辑器导出」卡点不出下载（下载可能仍被禁用）")
     log(f"    ✓ 已触发下载（{how}）：{dl.suggested_filename}")
-    tmp = Path(tempfile.mkdtemp()) / dl.suggested_filename
+    tmp = Path(tempfile.mkdtemp(dir=str(_dl_tmp_dir()))) / dl.suggested_filename
     dl.save_as(str(tmp))
     page.keyboard.press("Escape")
     page.wait_for_timeout(600)
@@ -1395,6 +1421,77 @@ def do_redownload(p, workdir, mode, only_title=None, model=DEFAULT_MODEL, picks=
             pass
 
 
+def do_set_workdir(path_str):
+    """把「默认曲库位置」设到指定盘（例如 D:\\music-workflow），一次设定长期生效。
+
+    背景（2026-09-20 用户提出）：批量下载的音频/封面越攒越多，默认落在系统盘
+    （C 盘）容易挤爆。把曲库 + 下载中转一起挪到数据盘，以后所有脚本
+    （生成 / 上传 / 核对）不用加任何参数就都写在新位置。
+
+    做的事：
+      1. 建好目标目录骨架：library/ lyrics/ .tmp/
+      2. 若目标没有 tasks.csv，从 skill 里拷一份模板过去
+      3. 把 workdir / temp_dir 写进本机设置文件（不进仓库、不分发）
+      4. 打印前后对照 + 目标盘剩余空间，证明真的换过去了
+
+    只创建目录和写一个 json，**不动任何已有歌曲**（迁移老歌用 --migrate）。
+    """
+    import shutil as _sh
+
+    p = Path(path_str).expanduser().resolve()
+    print("=" * 64)
+    print("设置默认曲库位置")
+    print("=" * 64)
+
+    before = _ACTIVE_WORKDIR or resolve_workdir(None)
+    print(f"  现在（旧）：{before}")
+
+    try:
+        for d in ("library", "lyrics", ".tmp"):
+            (p / d).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"  ✗ 建目录失败：{type(e).__name__}: {e}")
+        print(f"    请检查 {p} 是否可写（盘符是否存在、有没有权限）")
+        return 1
+
+    # 新位置没有歌单模板就拷一份，免得用户面对空目录不知道从哪开始
+    tpl = ROOT / "tasks.csv"
+    if not (p / "tasks.csv").exists() and tpl.exists():
+        try:
+            _sh.copyfile(str(tpl), str(p / "tasks.csv"))
+            print("  · 已从 skill 拷入歌单模板 tasks.csv")
+        except Exception as e:
+            print(f"  · 歌单模板拷贝失败（不影响，可手建）：{e}")
+
+    try:
+        sf = save_settings(workdir=str(p), temp_dir=str(p / ".tmp"))
+    except Exception as e:
+        print(f"  ✗ 写设置失败：{type(e).__name__}: {e}")
+        return 1
+
+    print(f"  以后（新）：{p}")
+    print(f"  设置文件  ：{sf}")
+    print()
+    print("  新位置的子目录：")
+    for d in ("library", "lyrics", ".tmp"):
+        print(f"    {d:<9} {(p / d)}")
+
+    # 证明换盘成功：打印目标盘容量
+    try:
+        import shutil as _sh2
+        t, u, f = _sh2.disk_usage(str(p.anchor))
+        print()
+        print(f"  {p.anchor} 总 {t/1024**3:.1f} GB / 剩余 {f/1024**3:.1f} GB")
+    except Exception:
+        pass
+
+    print()
+    print("  ✓ 完成。从现在起，miaoxiang.py / fanqie_upload.py / verify_published.py")
+    print("    不加任何参数都会用这个目录；下载中转也走它下面的 .tmp/，不再占系统盘。")
+    print("    （要改回去：再运行一次本命令，指向你想要的目录即可）")
+    return 0
+
+
 def do_list_cards(p, workdir):
     """只读：打印资产页「生成结果」里所有卡片的**签名**，供 --card 复制使用。
 
@@ -1460,6 +1557,9 @@ def main():
     ap.add_argument("--list-cards", action="store_true",
                     help="只读列出资产页「生成结果」的所有卡片签名（给 --card 抄参数用；"
                          "不点生成/导出/下载，零额度消耗）")
+    ap.add_argument("--set-workdir", default=None, metavar="目录",
+                    help="把默认曲库位置设到指定盘（如 D:\\music-workflow），一次设定长期生效；"
+                         "下载中转也一起挪过去，批量下载不再占系统盘。不动已有歌曲")
     ap.add_argument("--workdir", default=None,
                     help="工作目录（含 tasks.csv / lyrics / library）；默认取当前目录")
     ap.add_argument("--song", default=None, help="只生成指定歌名的那一首")
@@ -1478,9 +1578,14 @@ def main():
     if args.card:
         args.redownload = True          # --card 天然属于补下载动作
 
+    # --set-workdir 纯本地操作，不起浏览器、不上网、不烧额度
+    if args.set_workdir:
+        return do_set_workdir(args.set_workdir)
+
     if not args.login and not args.probe and not args.walk \
             and not args.learn and not args.gen and not args.redownload \
-            and not args.card and not args.list_cards:
+            and not args.card and not args.list_cards \
+            and not args.set_workdir:
         ap.print_help()
         print("\n提示：第一次用先 --login，然后 --walk / --learn，熟悉后用 --gen。")
         return
@@ -1519,4 +1624,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

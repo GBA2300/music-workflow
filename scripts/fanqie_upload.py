@@ -52,16 +52,20 @@ import time
 from pathlib import Path
 
 from playwright.async_api import async_playwright
-from paths import user_profile  # 登录态存每用户私有目录，绝不在 skill 内
+from paths import user_profile, default_workdir  # 登录态存每用户私有目录，绝不在 skill 内
 
 SCRIPT_DIR = Path(__file__).resolve().parent     # 脚本所在目录（只用来 import 兄弟模块）
 # ⚠️⚠️ 2026-09-17 修（严重）：以前 `ROOT = 脚本目录`，导致**数据类路径全部指向 skill 内部**，
 #    用户在别处跑（--workdir / MW_WORKDIR）时，脚本跑去找
 #    `skills/music-workflow/scripts/library/踏月寻你-01/audio.mp3` → WinError 3 找不到路径，
 #    歌名也被连字符切坏（「踏月寻你-01」当成歌名）。
-#    现在：数据目录 = MW_WORKDIR 环境变量 > 当前工作目录(有 tasks.csv) > 脚本目录（向后兼容）。
+#    2026-09-20 再修：把「设置文件里的默认曲库位置」也纳入解析，与 miaoxiang.py 保持一致 ——
+#    否则用户把曲库设到 D 盘后，生成端写 D 盘、上传端却去 C 盘找，报「没有待发布的新歌」。
+#    现在：数据目录 = MW_WORKDIR 环境变量 > 设置文件(settings.json) > 当前工作目录(有 tasks.csv) > 脚本目录。
 ROOT = Path(os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR") or "").expanduser() \
     if (os.environ.get("MW_WORKDIR") or os.environ.get("MUSIC_WORKDIR")) else None
+if ROOT is None:
+    ROOT = default_workdir()                     # 用户在 --set-workdir 里设过的位置
 if ROOT is None:
     _cwd = Path.cwd()
     ROOT = _cwd if (_cwd / "tasks.csv").exists() else SCRIPT_DIR
