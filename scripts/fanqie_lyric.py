@@ -20,19 +20,28 @@
 ──────────────────────────────
 - 详情页**不含作词/作曲/编曲署名**（搜「作词/作曲/编曲/制作人」全 0 命中），
   所以**无法研究「谁写的」**，只能研究「怎么写」。
-- 详情页**不含曲风标签**。曲风需另判：可用「专辑名 + 时长 + 歌名形态」推断，
-  或结合 `fanqie_chart.py` 的榜单语境。**本工具不猜曲风**，只输出可验证的文本结构。
+- 详情页**不含曲风标签**。曲风需另判：可优先用 `fanqie_rank.py` 榜单自带的
+  官方曲风标签（`tags` 字段，最准），否则用「专辑名 + 时长 + 歌名形态」推断。
+  **本工具不猜曲风**，只输出可验证的文本结构。
+
+样本从哪来（重要）
+──────────────────
+样本 ID 从 `charts/` 里取，优先级：
+1. **`番茄榜单-*.json`（首选）** —— `fanqie_rank.py` 采的**番茄音乐 APP 官方榜**
+   （热歌榜/飙升榜/各年龄榜…）。名次与数据都是平台自己的，与用户在 APP 里看到的**一致**。
+2. `番茄热门歌曲-*.json`（兜底）—— `fanqie_chart.py` 采的**网页版**热门位。
+   网页版与 APP 榜单**差距很大**（网页版没有榜单页），仅在拿不到 APP 榜时才用。
 
 用法
 ────
-    # 采榜单 TOP10 的歌词并拆解（会先读 charts/ 里最新的榜单 json 拿作品 ID）
+    # 采榜单 TOP10 的歌词并拆解（默认优先读 APP 官方榜 json）
     python fanqie_lyric.py --top 10
 
     # 指定作品 ID（逗号分隔）
     python fanqie_lyric.py --ids 7646108934238899225,7621396821633403929
 
     # 指定榜单 json
-    python fanqie_lyric.py --chart-json "D:\\music-workflow\\charts\\番茄热门歌曲-2026-09-21.json" --top 5
+    python fanqie_lyric.py --chart-json "D:\\music-workflow\\charts\\番茄榜单-热歌榜-2026-09-21.json" --top 5
 
 产物
 ────
@@ -187,15 +196,29 @@ async def fetch_one(page, sid: str, title_hint: str = "") -> dict:
     }
 
 
-def pick_ids_from_chart(workdir: Path, top: int) -> list[dict]:
+def pick_ids_from_chart(workdir: Path, top: int, explicit: str = "") -> list[dict]:
+    """从 charts/ 取样本 ID。
+
+    优先级：APP 官方榜单（`番茄榜单-*.json`，由 fanqie_rank.py 生成）
+          > 网页版热门（`番茄热门歌曲-*.json`，由 fanqie_chart.py 生成）。
+    两者字段里都有 `id`（作品 ID）与 `name`，可直接复用。
+    """
     charts = workdir / "charts"
-    if not charts.is_dir():
+    if explicit:
+        cands = [Path(explicit)]
+    elif charts.is_dir():
+        cands = sorted(charts.glob("番茄榜单-*.json")) or sorted(charts.glob("番茄热门歌曲-*.json"))
+    else:
         return []
-    js = sorted(charts.glob("番茄热门歌曲-*.json"))
-    if not js:
+    if not cands:
         return []
-    data = json.loads(js[-1].read_text(encoding="utf-8"))
-    log(f"榜单来源：{js[-1].name}（采集于 {data.get('collected_at')}）")
+    data = json.loads(cands[-1].read_text(encoding="utf-8"))
+    src = cands[-1].name
+    kind = "番茄音乐 APP 官方榜" if src.startswith("番茄榜单-") else "网页版热门（非榜单）"
+    log(f"榜单来源：{src}（{kind}，采集于 {data.get('collected_at')}）")
+    if not src.startswith("番茄榜单-"):
+        log("  ⚠️ 当前用的是网页版热门位，与 APP 音乐榜差距大；"
+            "建议先跑 `python fanqie_rank.py --rank 热歌榜` 拿 APP 官方榜。")
     return (data.get("rows") or [])[:top]
 
 
@@ -211,7 +234,7 @@ def write_report(songs: list[dict], workdir: Path) -> tuple[Path, Path]:
     L.append("")
     L.append(f"- 采集时间：{datetime.now():%Y-%m-%d %H:%M}")
     L.append("- 歌词来源：番茄音乐歌曲详情页 `novelfm.com/music/<作品ID>`（**平台在播版本**，非第三方歌词站）")
-    L.append(f"- 样本：{len(songs)} 首（取自 `charts/` 最新榜单的 TOP{len(songs)}）")
+    L.append(f"- 样本：{len(songs)} 首（取自 `charts/` 榜单的 TOP{len(songs)}，APP 官方榜优先）")
     L.append("- 用途：研究**创作思维模式与创作风格**（结构 / 记忆点 / 句式 / 韵脚 / 意象），"
              "不研究播放量")
     L.append("")
@@ -300,7 +323,8 @@ async def main():
     ap = argparse.ArgumentParser(description="番茄音乐爆款歌词拆解（只读）")
     ap.add_argument("--top", type=int, default=10, help="从榜单取前几首（默认 10）")
     ap.add_argument("--ids", default="", help="直接指定作品 ID，逗号分隔")
-    ap.add_argument("--chart-json", default="", help="指定榜单 json（默认取 charts/ 里最新的）")
+    ap.add_argument("--chart-json", default="",
+                    help="指定榜单 json（默认优先取 charts/ 里的 APP 官方榜 `番茄榜单-*.json`）")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
@@ -314,9 +338,10 @@ async def main():
     if args.ids:
         targets = [{"id": s.strip(), "name": ""} for s in args.ids.split(",") if s.strip()]
     else:
-        targets = pick_ids_from_chart(wd, args.top)
+        targets = pick_ids_from_chart(wd, args.top, args.chart_json)
     if not targets:
-        log("没有样本。先跑 fanqie_chart.py 生成榜单，或用 --ids 指定作品 ID。")
+        log("没有样本。先跑 fanqie_rank.py（APP 官方榜）或 fanqie_chart.py（网页版）生成榜单，"
+            "或用 --ids / --chart-json 指定。")
         return 2
 
     log(f"工作目录：{wd}")
