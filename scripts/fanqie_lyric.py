@@ -27,20 +27,29 @@
 样本从哪来（重要）
 ──────────────────
 样本 ID 从 `charts/` 里取，优先级：
-1. **`番茄榜单-*.json`（首选）** —— `fanqie_rank.py` 采的**番茄音乐 APP 官方榜**
-   （热歌榜/飙升榜/各年龄榜…）。名次与数据都是平台自己的，与用户在 APP 里看到的**一致**。
-2. `番茄热门歌曲-*.json`（兜底）—— `fanqie_chart.py` 采的**网页版**热门位。
+1. **`番茄榜单-热歌榜-*.json`（首选）** —— `fanqie_rank.py` 采的**番茄音乐 APP 官方热歌榜**
+   （名次与数据都是平台自己的，与用户在 APP 里看到的**一致**）。用 `--rank` 可换成别的榜。
+2. `番茄榜单-<其它榜>-*.json` —— 若没有热歌榜，才用别的 APP 官方榜。
+3. `番茄热门歌曲-*.json`（兜底）—— `fanqie_chart.py` 采的**网页版**热门位。
    网页版与 APP 榜单**差距很大**（网页版没有榜单页），仅在拿不到 APP 榜时才用。
+
+> ⚠️ 同一天 `charts/` 里会有**多份** `番茄榜单-*.json`（热歌/飙升/80后…）。
+> 早期版本用 `sorted(...)[-1]` 取「最后一份」，那是**按文件名排序的巧合**
+> —— 实测静默拿到了「飙升榜」而不是热歌榜。**现在按榜名显式挑，默认热歌榜。**
 
 用法
 ────
-    # 采榜单 TOP10 的歌词并拆解（默认优先读 APP 官方榜 json）
+    # 采热歌榜 TOP10 的歌词并拆解（默认按榜名挑热歌榜）
     python fanqie_lyric.py --top 10
+
+    # 换别的官方榜当样本源
+    python fanqie_lyric.py --top 10 --rank 飙升榜
+    python fanqie_lyric.py --top 10 --rank 80后热歌
 
     # 指定作品 ID（逗号分隔）
     python fanqie_lyric.py --ids 7646108934238899225,7621396821633403929
 
-    # 指定榜单 json
+    # 直接指定榜单 json
     python fanqie_lyric.py --chart-json "D:\\music-workflow\\charts\\番茄榜单-热歌榜-2026-09-21.json" --top 5
 
 产物
@@ -80,6 +89,9 @@ except Exception:                                     # pragma: no cover
 SCRIPT_DIR = Path(__file__).resolve().parent
 SONG_URL = "https://www.novelfm.com/music/{sid}"
 PROFILE = "profile_fanqie"
+# 少于这个行数就不算有效样本：1~2 行通常是「新歌还没上歌词」或页面结构不同，
+# 收进来会把结构统计带偏（实测踩到《等不到的老伴》只取到 1 行）。
+MIN_LYRIC_LINES = 8
 
 # 详情页正文里，歌词区的上界是播放器时间「00:00」下一行的时长；下界是这两句之一
 LYRIC_STOP = ("打开番茄音乐", "猜你喜欢", "扫码下载")
@@ -196,29 +208,67 @@ async def fetch_one(page, sid: str, title_hint: str = "") -> dict:
     }
 
 
-def pick_ids_from_chart(workdir: Path, top: int, explicit: str = "") -> list[dict]:
+def pick_chart_file(charts: Path, want_rank: str) -> Path | None:
+    """在 charts/ 里挑一份榜单 json。
+
+    ⚠️ 2026-09-21 修的真 bug：同一天会有**多份** `番茄榜单-*.json`（热歌/飙升/80后…），
+    原来直接取 `sorted(...)[-1]` —— 那是**按文件名排序的最后一份**（实测拿到「飙升榜」），
+    纪律 0 明明要求热歌榜。**默认必须明确挑热歌榜**，挑不到才退而求其次。
+
+    优先级：`番茄榜单-热歌榜-最新日期` > `番茄榜单-<want_rank>-最新日期`
+          > 任意 `番茄榜单-*`（最新日期）> `番茄热门歌曲-*`（网页版兜底）
+    """
+    def newest(paths: list[Path]) -> Path | None:
+        return sorted(paths)[-1] if paths else None
+
+    app = sorted(charts.glob("番茄榜单-*.json"))
+
+    def by_rank(name: str) -> list[Path]:
+        return [p for p in app if p.name.startswith(f"番茄榜单-{name}-")]
+
+    # 1) 用户点名的那份（默认热歌榜）
+    if want_rank:
+        hit = newest(by_rank(want_rank))
+        if hit:
+            return hit
+    # 2) 兜底：明确再试一次热歌榜（want_rank 传了别的榜时也保证不会误取）
+    if want_rank != "热歌榜":
+        hit = newest(by_rank("热歌榜"))
+        if hit:
+            return hit
+    # 3) 任意 APP 榜
+    if app:
+        return newest(app)
+    # 4) 网页版（已降级为兜底）
+    return newest(sorted(charts.glob("番茄热门歌曲-*.json")))
+
+
+def pick_ids_from_chart(workdir: Path, top: int, explicit: str = "",
+                        want_rank: str = "热歌榜") -> list[dict]:
     """从 charts/ 取样本 ID。
 
-    优先级：APP 官方榜单（`番茄榜单-*.json`，由 fanqie_rank.py 生成）
-          > 网页版热门（`番茄热门歌曲-*.json`，由 fanqie_chart.py 生成）。
+    优先级：APP 官方榜单（`番茄榜单-<want_rank>-*.json`，默认热歌榜）
+          > 网页版热门（`番茄热门歌曲-*.json`，已降级为兜底）。
     两者字段里都有 `id`（作品 ID）与 `name`，可直接复用。
     """
     charts = workdir / "charts"
     if explicit:
-        cands = [Path(explicit)]
+        cand = Path(explicit)
     elif charts.is_dir():
-        cands = sorted(charts.glob("番茄榜单-*.json")) or sorted(charts.glob("番茄热门歌曲-*.json"))
+        cand = pick_chart_file(charts, want_rank)
     else:
         return []
-    if not cands:
+    if not cand or not cand.exists():
         return []
-    data = json.loads(cands[-1].read_text(encoding="utf-8"))
-    src = cands[-1].name
+    data = json.loads(cand.read_text(encoding="utf-8"))
+    src = cand.name
     kind = "番茄音乐 APP 官方榜" if src.startswith("番茄榜单-") else "网页版热门（非榜单）"
     log(f"榜单来源：{src}（{kind}，采集于 {data.get('collected_at')}）")
     if not src.startswith("番茄榜单-"):
         log("  ⚠️ 当前用的是网页版热门位，与 APP 音乐榜差距大；"
             "建议先跑 `python fanqie_rank.py --rank 热歌榜` 拿 APP 官方榜。")
+    elif want_rank and not src.startswith(f"番茄榜单-{want_rank}-"):
+        log(f"  ℹ️ 没找到「{want_rank}」，改用这份榜。")
     return (data.get("rows") or [])[:top]
 
 
@@ -323,8 +373,10 @@ async def main():
     ap = argparse.ArgumentParser(description="番茄音乐爆款歌词拆解（只读）")
     ap.add_argument("--top", type=int, default=10, help="从榜单取前几首（默认 10）")
     ap.add_argument("--ids", default="", help="直接指定作品 ID，逗号分隔")
+    ap.add_argument("--rank", default="热歌榜",
+                    help="用哪个 APP 官方榜当样本源（默认 热歌榜；如 飙升榜/80后热歌）")
     ap.add_argument("--chart-json", default="",
-                    help="指定榜单 json（默认优先取 charts/ 里的 APP 官方榜 `番茄榜单-*.json`）")
+                    help="直接指定榜单 json（优先级最高，默认按 --rank 自动挑）")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
@@ -338,7 +390,7 @@ async def main():
     if args.ids:
         targets = [{"id": s.strip(), "name": ""} for s in args.ids.split(",") if s.strip()]
     else:
-        targets = pick_ids_from_chart(wd, args.top, args.chart_json)
+        targets = pick_ids_from_chart(wd, args.top, args.chart_json, args.rank)
     if not targets:
         log("没有样本。先跑 fanqie_rank.py（APP 官方榜）或 fanqie_chart.py（网页版）生成榜单，"
             "或用 --ids / --chart-json 指定。")
@@ -364,8 +416,13 @@ async def main():
                 s = await fetch_one(page, sid, t.get("name", ""))
                 got = len(s["lyrics"])
                 log(f"  [{k}/{len(targets)}] 《{s['title']}》 取到 {got} 行歌词  （{s['duration'] or '?'}）")
-                if got:
+                if got >= MIN_LYRIC_LINES:
                     songs.append(s)
+                elif got:
+                    # 太少 = 大概率是「新歌还没上歌词」或页面结构不同 ——
+                    # 1~2 行的「样本」会把结构统计彻底带偏（比如「平均 1 行」），必须挡掉
+                    log(f"      ⚠️ 只有 {got} 行，不足以当结构样本，已跳过"
+                        f"（《{s['title']}》可能还没上歌词）")
                 else:
                     log("      ⚠️ 没解析到歌词 —— 该页结构可能不同，已跳过")
             except Exception as e:
