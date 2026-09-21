@@ -276,6 +276,8 @@ music-workflow/
 │   ├── inspect_buttons.py 按钮探测器：列出页面所有可见按钮的属性，查按钮 selector 用
 │   ├── popup_guard.py     弹窗守卫：自动关掉挡路浮层（× → 文字按钮 → Esc → 铲整屏遮罩）
 │   ├── test_popup_guard.py 弹窗守卫自检：真起 chromium 构造三种弹窗，14 项验证
+│   ├── check_guard_wiring.py ★ 接线自检：静态扫一遍，看哪个脚本"以为接了其实没接"
+│   │                      （**不开浏览器、零成本**，提交前跑；退出码非 0 = 有漏接）
 │   ├── browser_utils.py   ★ 浏览器进程清理：只杀 exe 路径带 ms-playwright 的
 │   │                      （**绝不按进程名一刀切**，否则会误杀用户自己的 Chrome）
 │   ├── paths.py           每用户私有登录态目录解析（防止登录态随 skill 泄露，所有脚本登录态必须走这里）
@@ -859,6 +861,26 @@ cd <工作目录>
 > `open_browser` 挂 `guard_context`、关键跳转走 `goto_with_guard`、关键点击前 `dismiss_popups`。
 > **新增妙响侧任何 goto / 点击逻辑时，请沿用这三个接口，不要再用裸 `page.goto()`。**
 > 排错用 `scripts/probe_mx_popup.py`（只读，见「容错与排错 → 妙响侧」）。
+
+> **★ 更狠的一课（同日）：不只妙响侧漏了，番茄侧也有 5 个。**
+> 修完妙响后我没有收工，而是加了一个**静态接线自检** `scripts/check_guard_wiring.py`
+> 去数"谁真的调了守卫"，结果揪出**生产链路上还有 5 个脚本从没接过守卫**：
+> `fanqie_lyric.py`（六步铁律第 2 步）、`verify_published.py`（纪律 3 核对）、
+> `fanqie_chart.py`（第 1 步兜底榜）、`login_check.py`（登录）、`fanqie_learn.py`（录制）。
+> **为什么这比妙响那次更危险**：它们都是**读页面**的脚本 ——
+> 弹窗挡住不会报错，只会让 `body.innerText` 里**多出弹窗文案**、
+> 或让列表**读成空**，于是「歌词统计被悄悄带偏」「歌明明发了却报没发」。
+> 凡是"**猜错也不报错的**"失败模式，都比"直接崩掉"危险得多。
+>
+> **动手前先自检（30 秒、零成本、不开浏览器）：**
+> ```bat
+> <python> <skill>\scripts\check_guard_wiring.py
+> ```
+> 输出「✓ 生产链路全部达标」才动手；报「✗ 完全没接」就按上面的接法补。
+> ⚠️ 异步脚本用 `a_guard_context` / `a_goto_with_guard`（`fanqie_upload.py` 是 async）；
+> 同步脚本才用 `guard_context` / `goto_with_guard`（`login_check.py` 是 sync）。
+> ⚠️ **未登录/登录页**首次跳转要传 `dismiss=False` —— 那里弹出来的往往就是登录框本身，
+> 关掉它后面就再也走不下去了。
 
 **它按这个顺序处理（先礼后兵）**：
 1. 点弹窗里的 × 关闭按钮（antd `.ant-modal-close`、`aria-label='close'` 等 32 种写法）

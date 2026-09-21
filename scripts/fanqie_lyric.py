@@ -74,6 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from playwright.async_api import async_playwright  # noqa: E402
 from browser_utils import clear_profile_locks, window_args  # noqa: E402
+from popup_guard import a_guard_context, a_goto_with_guard  # noqa: E402
 
 try:
     from paths import default_workdir, user_profile
@@ -194,7 +195,7 @@ def analyze(lyrics: list[str]) -> dict:
 
 async def fetch_one(page, sid: str, title_hint: str = "") -> dict:
     url = SONG_URL.format(sid=sid)
-    await page.goto(url, wait_until="domcontentloaded")
+    await a_goto_with_guard(page, url, log=log)
     await page.wait_for_timeout(5500)
     body = await page.evaluate("document.body.innerText") or ""
     lyrics, dur = extract_lyrics(body)
@@ -408,6 +409,10 @@ async def main():
             pd, headless=False, args=window_args(), viewport=None)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(30000)
+        # ★ 2026-09-21：挂弹窗守卫。番茄详情页会弹活动/会员/下载引导浮层，
+        #   裸 goto 进来后直接读 body.innerText，会把弹窗文案混进歌词正文 ——
+        #   这比「点不动」更隐蔽：不报错，只是统计被悄悄带偏。
+        await a_guard_context(ctx, log=log)
         for k, t in enumerate(targets, 1):
             sid = str(t.get("id") or "")
             if not sid:

@@ -79,6 +79,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from playwright.async_api import async_playwright  # noqa: E402
 from browser_utils import clear_profile_locks, window_args  # noqa: E402
+from popup_guard import a_guard_context, a_goto_with_guard  # noqa: E402
 
 try:
     from paths import default_workdir, user_profile
@@ -185,9 +186,11 @@ async def collect(scroll_rounds: int = 10) -> list[dict]:
             pd, headless=False, args=window_args(), viewport=None)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(30000)
+        # ★ 2026-09-21：挂弹窗守卫（首页会弹登录/活动浮层，挡住就滚不动列表）
+        await a_guard_context(ctx, log=log)
 
         log(f"打开 {HOME_URL}")
-        await page.goto(HOME_URL, wait_until="domcontentloaded")
+        await a_goto_with_guard(page, HOME_URL, log=log)
         await page.wait_for_timeout(7000)
 
         # 滚动到底逼出懒加载，直到卡片数不再增长

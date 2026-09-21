@@ -29,7 +29,7 @@
    结果**把你自己开着的 Chrome 一起杀了**（你当场发现并要求改掉）。
    现在全仓库统一走 `browser_utils.kill_browsers()` —— 它只杀 exe 路径里带
    `ms-playwright` 的进程（本工具自己拉起的），你自己的 Chrome 在
-   `C:\Program Files\Google\Chrome\...`，绝不会被碰。
+   `C:\\Program Files\\Google\\Chrome\\...`，绝不会被碰。
    录制器则更保守：只删 profile 的 Singleton* 锁文件，不杀任何进程。
 
 3. **Playwright 同步 API 不能放子线程**（妙响侧踩过：显示"录了几百步"实际 0 文件）。
@@ -54,6 +54,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 from browser_utils import clear_profile_locks
+from popup_guard import a_guard_context, a_goto_with_guard
 from fanqie_upload import LAUNCH_ARGS, PROFILE, UPLOAD_URL, fit_window_to_screen
 
 ROOT = Path(__file__).resolve().parent
@@ -297,6 +298,9 @@ async def do_learn(url, max_min):
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             str(PROFILE), headless=False, args=LAUNCH_ARGS, viewport=None)
+        # ★ 2026-09-21：只挂原生弹窗处理器，不主动 dismiss 浮层 ——
+        #   本脚本是"录我手动操作"的学习工具，自动关弹窗会污染事件流。
+        await a_guard_context(ctx, log=log)
 
         # 新开的标签页（「跳转授权」那步会开新标签）也要被记录
         cdp_pages = set()
@@ -352,7 +356,8 @@ async def do_learn(url, max_min):
         log("")
 
         try:
-            await page.goto(url, wait_until="domcontentloaded")
+            # dismiss=False：保持录制纯净（用户手动关弹窗的过程也要被录下来）
+            await a_goto_with_guard(page, url, log=log, dismiss=False)
         except Exception as e:
             log(f"! 打开页面失败：{type(e).__name__}: {e}")
         log("· 等 10 秒让 SPA 渲染完…")

@@ -59,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from playwright.async_api import async_playwright  # noqa: E402
 from browser_utils import clear_profile_locks, window_args  # noqa: E402
+from popup_guard import a_guard_context, a_goto_with_guard  # noqa: E402
 
 try:
     from paths import user_profile  # 登录态存每用户私有目录
@@ -258,7 +259,10 @@ async def main():
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         page.set_default_timeout(25000)
-        await page.goto(WORKS_URL, wait_until="domcontentloaded")
+        # ★ 2026-09-21：挂弹窗守卫。后台列表页也会弹浮层；本脚本[只读]，
+        #   清弹窗没有任何副作用，但不清就可能读不到列表 -> 误报「没发布」。
+        await a_guard_context(ctx, log=log)
+        await a_goto_with_guard(page, WORKS_URL, log=log)
         await page.wait_for_timeout(6000)
 
         # 多滚几屏，尽量把列表读全

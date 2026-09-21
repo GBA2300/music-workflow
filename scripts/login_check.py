@@ -37,6 +37,9 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from popup_guard import goto_with_guard, guard_context  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent
 SHOT = ROOT / "_login_shot.png"
 SHOT_DIR = ROOT / "_login_shots"
@@ -228,6 +231,10 @@ def run(target_key: str, minutes: int = 20):
             ignore_default_args=["--enable-automation"],
         )
         ctx.add_init_script(STEALTH_JS)
+        # ★ 2026-09-21：只挂原生弹窗处理器（alert/confirm 会挂死页面），
+        #   **不**主动 dismiss 浮层 —— 登录页上弹出来的往往就是登录框本身，
+        #   关掉它后面就再也走不下去了。
+        guard_context(ctx, log=log)
 
         pages = {"cur": ctx.pages[0] if ctx.pages else ctx.new_page()}
 
@@ -246,7 +253,8 @@ def run(target_key: str, minutes: int = 20):
         page.set_default_timeout(20000)
         log(f"正在打开：{t['url']}")
         try:
-            page.goto(t["url"], wait_until="domcontentloaded", timeout=60000)
+            # dismiss=False：未登录时别动弹窗（见上面那段注释）
+            goto_with_guard(page, t["url"], log=log, timeout=60000, dismiss=False)
         except Exception as e:
             log(f"⚠️ 打开页面失败（检查网络/代理）: {e}")
 
