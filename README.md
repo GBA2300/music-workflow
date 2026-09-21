@@ -197,6 +197,7 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | **搬到新盘后 `--gen` 就报上一条** | 老版本的 `migrate_library.py` 建新工作目录时只带 `tasks.csv`/`lyrics/`，**漏了 `config.json`**。已修：现在搬目录会连 `config.json` 一起带过去（源目录没有就从 skill 里兜一份） |
 | **核对脚本报 `TargetClosedError ... launch_persistent_context`** | 上传脚本跑完**故意保持浏览器打开**，占着 `profile_fanqie`，而核对脚本用同一个登录态目录 → 起不来（那行 chromium 日志是乱码，看不出真因）。**先清理再核对**：`python browser_utils.py` → `python verify_published.py` |
 | **核对完打了「全绿」，但刚发的那批没在里面** | 老版本 `--recent` 取的是 `published.json` 的**末尾 4 条**，而那个数组是**按字母排序**的 → 取到的是字母表末尾的歌。已修：改成按曲库目录**落盘时间**取最新 N 条，并显式打印「本次只核对最近 N 条（共 M 条）」。**核对前先确认清单里真有刚发的歌**，或用 `--songs "歌名-01,歌名-02"` 点名 |
+| **报 `ModuleNotFoundError: No module named 'playwright'`** | **用错 Python 解释器了**——依赖只装在装过 `pip install -r scripts/requirements.txt` 的那个解释器里。换一个用了同一个解释器跑即可（`<那个python> fanqie_chart.py`）。**再跑一次脚本之前，先确认你敲的是同一个 `python`。**（本项目实操中踩过：托管环境里的 3.13 与装过依赖的 3.12 是两个解释器） |
 | **想研究番茄的榜单再写歌** | 两步：`python fanqie_chart.py --top 10` 采番茄首页「热门歌曲」**真实在听人数**（只用来挑样本）→ `python fanqie_lyric.py --top 10` ★把 TOP10 歌词拉下来**拆解五层**（结构/记忆点/句式/韵脚/意象）。研究的是**怎么写**，不是数字。⚠️ 番茄音乐网页版**没有「热歌榜」页面**（18 个候选路径全回落首页），APP 端真榜单需手机抓包；但**详情页有歌词全文**，这才是能研究写法的地方 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
 | **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
