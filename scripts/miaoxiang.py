@@ -52,6 +52,8 @@ from paths import (  # noqa: E402
     user_profile, default_workdir, work_temp_dir, settings_file, save_settings,
 )
 from browser_utils import clear_profile_locks, window_args, viewport_for  # noqa: E402
+# ★ 2026-09-21：妙响侧此前**完全没接 popup_guard**，平台一加浮层就全线卡死。
+from popup_guard import dismiss_popups, goto_with_guard, guard_context  # noqa: E402
 
 MX_URL = "https://music.douyin.com/studio?panel=my-assets"
 CREATE_URL = "https://music.douyin.com/studio/create"   # 经典创作模式点进去的创作页
@@ -132,6 +134,10 @@ def open_browser(p):
     )
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     page.set_default_timeout(20000)
+    # ★ 2026-09-21：挂上原生弹窗（alert/confirm/prompt）处理器 + 新开页也挂。
+    #   背景：妙响侧原先**一次都没调用过 popup_guard**（全文件无 import），
+    #   于是平台新加的浮层一路挡住所有点击。踩点现场见 fill_create_page 的注释。
+    guard_context(ctx, log=log)
     return ctx, page
 
 
@@ -686,11 +692,25 @@ def select_model(page, model):
         log(f"  ⚠️ 触发器显示「{shown}」未含「{m}」，模型选择可能没生效")
 
 
-def fill_create_page(page, lyric, style, model=DEFAULT_MODEL, wait_ms=6000):
-    """创作页 → 专业模式 → 选模型 → 填歌词+曲风 → 点生成歌曲。"""
-    page.goto(CREATE_URL, wait_until="domcontentloaded")
+def fill_create_page(page, lyric, style, model=DEFAULT_MODEL, wait_ms=6000, cfg=None):
+    """创作页 → 专业模式 → 选模型 → 填歌词+曲风 → 点生成歌曲。
+
+    ⚠️ 2026-09-21 实测踩坑（用户端到端验收时暴露）：**必须清浮层才点得动「专业模式」**。
+       妙响新加了一个「写歌升级为Agent模式」引导弹窗 ——
+       `.semi-modal-mask`（fixed / z-index:1000 / 覆盖 100%）+ `.semi-modal-wrap-center`
+       里的 `.agent-mode-guide-modal-header`，按钮是 `button[aria-label="close"]`。
+       不清掉时点「专业模式」会超时，报错是：
+         `<div class="…agent-mode-guide-modal-header"> … intercepts pointer events`
+       ——这句话**完全没提「是弹窗挡的」**，只报 selector 点不动，极易误判成页面改版。
+       本函数此前用**裸 page.goto**，且全文件没接 popup_guard，所以必踩。
+       现在改走 `goto_with_guard` + 点前显式 `dismiss_popups`。
+       （`extra_popup_roots` 无需新增选择器 —— 实测 `use_overlay_scope` 已能按
+        「fixed/absolute + z≥100 + 覆盖≥40%」认出它并成功关闭，见 probe_mx_popup.py。）
+    """
+    goto_with_guard(page, CREATE_URL, cfg=cfg, log=log, wait_until="domcontentloaded")
     log("· 创作页已打开，等渲染…")
     page.wait_for_timeout(wait_ms)
+    dismiss_popups(page, cfg=cfg, log=log)
 
     log("· 切到「专业模式」")
     page.get_by_text("专业模式", exact=True).first.click(timeout=10000)
@@ -735,7 +755,7 @@ def fill_create_page(page, lyric, style, model=DEFAULT_MODEL, wait_ms=6000):
     log("  ✓ 已点「生成歌曲」")
 
 
-def ensure_genresult_tab(page, tries=4):
+def ensure_genresult_tab(page, tries=4, cfg=None):
     """进资产页并**确认**停在「生成结果」tab，切不过来就重试。
 
     ⚠️ 这是 egWPo9 下载失败的根因：资产页默认落在「对话记录」tab，
@@ -743,10 +763,15 @@ def ensure_genresult_tab(page, tries=4):
        外层卡片 [class*="generatedSongListItem"] 找得到、内层按钮找不到，
        报错形如 waiting for locator(...).first.locator('[aria-label="更多操作"]')。
        → 必须用「第一张卡片里有没有更多操作按钮」来**验证** tab 真的切过来了。
+
+    ⚠️ 2026-09-21：加 `dismiss_popups` —— 妙响的「Agent模式引导」浮层同样会挡住
+       「生成结果」tab（现场表现是「（生成结果 tab 未就绪，重试 1/4…4/4）」全灭、
+       接着「生成前资产页已有 0 张卡片」）。只切 tab 不清浮层 = 白重试。
     """
-    page.goto(ASSETS_URL, wait_until="domcontentloaded")
+    goto_with_guard(page, ASSETS_URL, cfg=cfg, log=log, wait_until="domcontentloaded")
     page.wait_for_timeout(7000)
     for t in range(tries):
+        dismiss_popups(page, cfg=cfg, log=log)
         try:
             page.get_by_text("生成结果", exact=True).first.click(timeout=8000)
         except Exception:
@@ -764,12 +789,12 @@ def ensure_genresult_tab(page, tries=4):
     return False
 
 
-def open_assets_and_tab(page):
+def open_assets_and_tab(page, cfg=None):
     """进资产页并切到「生成结果」tab（带校验+重试）。"""
-    return ensure_genresult_tab(page)
+    return ensure_genresult_tab(page, cfg=cfg)
 
 
-def wait_new_cards(page, before, need, max_min, poll=30):
+def wait_new_cards(page, before, need, max_min, poll=30, cfg=None):
     """轮询资产页，等这一轮的新卡片够数。返回新卡片签名（newest first）。
 
     ⚠️ 2026-09-17 修：必须用 CARDS_JS_STRICT —— 宽松版会把骨架卡（innerText=''）
@@ -781,6 +806,7 @@ def wait_new_cards(page, before, need, max_min, poll=30):
     while time.time() < deadline:
         page.reload(wait_until="domcontentloaded")
         page.wait_for_timeout(6000)
+        dismiss_popups(page, cfg=cfg, log=log)   # ★ 浮层也会挡住 tab 切换（2026-09-21）
         try:
             page.get_by_text("生成结果", exact=True).first.click(timeout=6000)
             page.wait_for_timeout(2500)
@@ -1285,11 +1311,11 @@ def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL)
                 continue
             log(f"  歌词 {len(lyric)} 字，来源 {task['lyrics_file']}")
 
-            open_assets_and_tab(page)
+            open_assets_and_tab(page, cfg=cfg)
             before = _cards_strict(page)
             log(f"  生成前资产页已有 {len(before)} 张卡片")
 
-            fill_create_page(page, lyric, task["style"], model)
+            fill_create_page(page, lyric, task["style"], model, cfg=cfg)
             log("· 等待生成（约 5–6 分钟）…")
             try:
                 page.wait_for_url("**/playground**", timeout=120000)
@@ -1297,8 +1323,8 @@ def do_gen(p, workdir, mode, max_wait_min, only_title=None, model=DEFAULT_MODEL)
             except Exception:
                 log("  ! 没等到 playground，直接去资产页看")
 
-            open_assets_and_tab(page)
-            new = wait_new_cards(page, before, need, max_wait_min)
+            open_assets_and_tab(page, cfg=cfg)
+            new = wait_new_cards(page, before, need, max_wait_min, cfg=cfg)
             if len(new) < need:
                 log(f"  ✗ 只等到 {len(new)} 张新卡片（要 {need} 张），跳过")
                 continue

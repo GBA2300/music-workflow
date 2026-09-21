@@ -54,6 +54,8 @@ COPY_FILES = [
     "miaoxiang.py",        # ★ 主力生成端（妙响 / 抖音音乐创作实验室）
     "fanqie_chart.py",     # ★ 榜单采集（纪律 0 第一步：番茄音乐首页热门歌曲 + 在听人数）
     "fanqie_lyric.py",     # ★ 歌词拆解（纪律 0 核心：采详情页歌词 + 结构/记忆点/韵脚/意象分析）
+    "fanqie_rank.py",      # ★★ 榜单采集（纪律 0 第一步首选：番茄音乐 **APP 官方榜**，10 榜×50 首）
+    "fanqie_recipe.py",    # ★★★ 创作配方卡（纪律 0 第三步：把「榜单+拆解」压成能照着落笔的参数）
     "cover.py",            # 封面生成（被 miaoxiang.py / generate.py 调用）
     "migrate_library.py",  # 把散落的曲库搬到别的盘（省系统盘）
     "purge_bin.py",        # 清回收站里属于某目录的条目（真删才腾空间；见 SKILL.md 存储章节）
@@ -70,6 +72,7 @@ COPY_FILES = [
     "paths.py",
     "test_popup_guard.py",
     "probe_popup.py",
+    "probe_mx_popup.py",   # 妙响侧弹窗只读探针（含命中测试 + 实测守卫能否关闭）
     "config.json",
     "tasks.csv",
     "requirements.txt",

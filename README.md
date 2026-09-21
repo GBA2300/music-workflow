@@ -224,6 +224,8 @@ python fanqie_upload.py --mark-published 我的第一首歌-01,我的第一首�
 | **报 `ModuleNotFoundError: No module named 'playwright'`** | **用错 Python 解释器了**——依赖只装在装过 `pip install -r scripts/requirements.txt` 的那个解释器里。换一个用了同一个解释器跑即可（`<那个python> fanqie_chart.py`）。**再跑一次脚本之前，先确认你敲的是同一个 `python`。**（本项目实操中踩过：托管环境里的 3.13 与装过依赖的 3.12 是两个解释器） |
 | **想研究番茄的榜单再写歌** | 三步：`python fanqie_rank.py --rank 热歌榜 --limit 50` 采番茄**音乐 APP 官方榜**（10 个榜 × 每榜 50 首，带平台名次/涨跌/播放量/官方曲风标签，只用来挑样本）→ `python fanqie_lyric.py --top 10 --rank 热歌榜` ★把**热歌榜前十首**歌词拉下来**拆解五层**（结构/记忆点/句式/韵脚/意象）→ `python fanqie_recipe.py --ranks 热歌榜,80后热歌,90后热歌` ★★出**创作配方卡**（写几行 / 副歌几行 / 重复几次 / 歌名几个字 / 韵脚挑哪几个 / 情绪需求四问）。研究的是**怎么写**，不是数字。⚠️ 网页版没有榜单页且与 APP **歌名交集 0 首**，`fanqie_chart.py` 只是兜底 |
 | **页面弹窗挡住按钮，卡住不动** | 已内置自动处理（见下）。真遇到关不掉的，跑 `python probe_popup.py` 把弹窗结构抓出来，把建议的选择器加进 `config.json` 的 `popup_guard.extra_popup_roots` |
+| **妙响报 `Timeout … / XX intercepts pointer events`，某按钮点不动** | **先当成弹窗问题，别先改选择器。** 妙响会弹「写歌升级为Agent模式」引导浮层，它盖住「专业模式」，报错却只说 selector 点不动。跑 `python probe_mx_popup.py`（只读、零额度）抓浮层结构 + 命中测试 + 实测守卫能不能关掉；已内置自动清障，正常不用管 |
+| **妙响日志出现「生成结果 tab 未就绪，重试 1/4…4/4」然后「资产页已有 0 张卡片」** | 同一个浮层造成的。2026-09-21 已修（切 tab 前先清浮层）。若再现，跑 `probe_mx_popup.py --assets` |
 | **页面没铺满屏幕 / 底部按钮点不到** | 已修复：窗口最大化 + 页面跟随窗口自适应（不再固定视口），任何分辨率/DPI 都完整，点击前自动滚动到按钮 |
 
 <details>

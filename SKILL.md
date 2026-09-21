@@ -160,6 +160,11 @@ agent_created: true
 1. **每批发布后，主动跑 `<python> scripts/verify_published.py`**，
    去番茄后台「成品发行」列表逐条核对，把**作品 ID / 状态**一并报给用户。
    不许只报「已发布」就收工。
+   - **核对出来的作品 ID 顺手落档到 `<工作目录>/publish_ids.json`**
+     （`folder → track / work_id / status / created`，另附 `recent_history`）。
+     2026-09-21 起这么做：`verify_published.py` 本身**只读、绝不写文件**（这是对的，别改），
+     所以 ID 由**核对的一方**另存一份 —— 作品 ID 是唯一能拿去人工查证的凭据，
+     只留在对话里，用户回头找不着。**日志会滚、对话会散，落档的不散。**
 2. **不许靠读截图/日志猜状态。** 页面上某些文字（如「已跳转签约页」）是
    **跳转后的静态占位**，不是状态指示器，拿它当证据会得出完全相反的结论。
    要判断事实，就**去数据源头查**。
@@ -737,6 +742,32 @@ cd <工作目录>
   第 1 首如果没等到就直接进第 2 首，**第 1 首的卡会晚到并被第 2 首当成新卡**（张冠李戴）。
   所以补下载**一律用 `--card` 显式指定**，别用「取最新 N 张」。
 - **「点了导出没反应 / 弹窗不出来」** —— 见下方「妙响侧踩坑」。
+- **★ `Locator.click: Timeout … / XX intercepts pointer events`（2026-09-21 首次端到端验收时暴露）** ——
+  **几乎总是弹窗问题，不是选择器改版。** 现场报错原文长这样：
+  ```
+  <div class="semiModalHeader-GnufRy agent-mode-guide-modal-header">…</div>
+     from <div class="semi-portal">…</div> subtree intercepts pointer events
+  ```
+  它**只告诉你谁挡住了，不告诉你那是弹窗** → 极易误判成「平台改版、selector 失效」然后去改选择器。
+  **真实根因**：妙响新加了「**写歌升级为 Agent 模式**」引导弹窗
+  （`.semi-modal-mask` 全屏遮罩 + `.agent-mode-guide-modal-*`，关闭键是 `button[aria-label="close"]`），
+  而妙响侧**当时完全没接过 `popup_guard`**（`miaoxiang.py` 全文 0 处 `dismiss_popups`），
+  且 `fill_create_page` / `ensure_genresult_tab` 用的是**裸 `page.goto`**（违反本文件自己的调用约定）。
+  → **同一个浮层会造成两个看似无关的症状**：① 创作页点不动「专业模式」；
+  ② 资产页「生成结果」tab 切不过去（日志「（生成结果 tab 未就绪，重试 1/4…4/4）」全灭
+  → 接着「生成前资产页已有 **0** 张卡片」，而事实上有 30 张）。
+  **已修（4 处接线，没动任何选择器）**：`import popup_guard` → `open_browser` 挂 `guard_context`
+  → `fill_create_page` / `ensure_genresult_tab` / `wait_new_cards` 改走 `goto_with_guard`
+  并在关键点击前 `dismiss_popups`（`cfg` 逐层透传）。
+  **`config.json` 一个字都不用改** —— 实测 `use_overlay_scope`（fixed/absolute + z≥100 + 覆盖≥40%）
+  已经能认出并关掉它。
+- **排错工具：`python scripts/probe_mx_popup.py`（妙响侧弹窗只读探针，零额度消耗）** ——
+  它除了 dump 挡路浮层的 class/z-index/覆盖比例/内含可点元素外，还做两件关键事：
+  ① **命中测试**：在目标按钮中心跑 `elementFromPoint`，确认吃点击的到底是谁（根因硬证据）；
+  ② **实测守卫**：真跑一次 `dismiss_popups()`，再看浮层还在不在（会存清理前/后两张截图）。
+  ⚠️ **只看 DOM 不看实测会得出「应该能关」的假结论** ——
+  「看起来能找到按钮」和「点了真的关掉」是两件事。
+  `--assets` 查资产页，`--no-dismiss` 只抓 DOM 不点。
 - **下载张冠李戴（两首歌入库同一音频）** —— `save_song()` 的 MD5 防重护栏会拒收并提示，
   看到这个提示说明导出卡定位错了，去查 `download_exported()` 的定位逻辑。
 - **浏览器窗口被关（`TargetClosedError`）** —— 脚本会检测 `ctx.pages` 并干净收尾，不再抛裸异常。
@@ -821,6 +852,13 @@ cd <工作目录>
 
 网站会**不定时**弹浮层（活动公告 / 新功能引导 / 会员推广 / 额度提醒），不关掉就点不动任何按钮，
 表现为「点了生成没反应」「填表填到一半卡住」。`popup_guard.py` 已自动处理，正常情况下不用管。
+
+> **★ 妙响侧也吃这套，而且是 2026-09-21 才接上的** ——
+> 在那之前 `miaoxiang.py` **一次都没调用过 `popup_guard`**，平台一加浮层（「写歌升级为Agent模式」）
+> 就全线卡死，报错还只说「selector 点不动」。现已接线：
+> `open_browser` 挂 `guard_context`、关键跳转走 `goto_with_guard`、关键点击前 `dismiss_popups`。
+> **新增妙响侧任何 goto / 点击逻辑时，请沿用这三个接口，不要再用裸 `page.goto()`。**
+> 排错用 `scripts/probe_mx_popup.py`（只读，见「容错与排错 → 妙响侧」）。
 
 **它按这个顺序处理（先礼后兵）**：
 1. 点弹窗里的 × 关闭按钮（antd `.ant-modal-close`、`aria-label='close'` 等 32 种写法）

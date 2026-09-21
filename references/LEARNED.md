@@ -20,6 +20,100 @@
 
 ---
 
+## 2026-09-21 · 番茄上传·封面 · 裁剪确认超时后走 ESC 兜底，兜底分支只自报成功、不校验
+
+- **现象**：4 首里**第 1 首** `upload_cover` 的 4 个 `arco-modal` 选择器**全部超时**，
+  脚本退回按 ESC 关窗，紧接着打印 `✓ 封面已上传` 继续往下走；
+  同一批的**第 2/3/4 首**用同一批选择器**都成功**（日志 `✓ 已点裁剪确认`）。
+  也就是说：同一个选择器，同一次运行，第 1 首失败、后 3 首成功。
+- **根因**（判断，**非实测**）：裁剪弹窗是**首帧时序抖动** ——
+  第 1 首是本次会话第一次打开裁剪弹窗，DOM 已出现（`arco-modal` 能选中）但
+  按钮的可点性/布局尚未就绪，4 次重试全落在挂载窗口内。
+  **但真正危险的不是超时，而是 ESC 兜底分支的语义**：
+  ESC 只做了一件事——**把挡路的窗关掉**；它**不能证明封面已经传上去了**，
+  可分支里直接记了「✓ 封面已上传」。**动作的语义 ≠ 断言的语义。**
+- **为什么这次没出事**：下游 `wait_all_uploads_complete` 会在点「下一步」之前
+  做一次全局校验（`所有歌曲的 音频+歌词+封面 均已传完`），而第 1 首的封面**确实传成功了**
+  （裁剪确认只是收尾动作，不是上传本身），所以全局校验通过、发布正常。
+  → **这次是下游兜住的，不是这个分支本身可靠。**
+- **隐患**：若哪天 ESC 关掉的恰好是一个**真的没传成功**的封面窗，
+  该分支依然自报 `✓ 封面已上传`，错误会一路流到「下一步」前才被拦；
+  且拦下时日志指向的是**全局校验**，不是真正的病根，排错要从头翻。
+- **解法**（本轮只记录，**不动代码**——验收期间不改生产脚本）：
+  ESC 兜底后不要直接 print 成功，改为**重新读一次当前封面缩略图/文件名是否已挂上**，
+  拿到实际证据再报成功；拿不到就明确报「未确认」，交给上层决定是否重试。
+  一句话：**兜底分支也要有断言。**
+- **验证**：`D://music-workflow//_fanqie_log2.txt` —— 第 1 首 4 次超时 → ESC → 自报成功；
+  第 2~4 首 `✓ 已点裁剪确认`；随后 `所有歌曲的 音频+歌词+封面 均已传完` 通过。
+  最终后台只读核对 4/4 在列表（`审核中`，作品 ID 见 `D://music-workflow//publish_ids.json`）。
+- **来源**：用户端到端验收第一次真跑时自己 debug 发现（不是脚本报错暴露的，是读日志时看出的）。
+
+## 2026-09-21 · 妙响生成 · 平台新加「Agent模式引导」浮层盖住「专业模式」→ 报错是「selector 点不动」，真病根是弹窗
+
+- **现象**（用户端到端验收第一次真跑时暴露）：`miaoxiang.py --gen` 走到第 1 首就崩，
+  报 `playwright._impl._errors.TimeoutError: Locator.click: Timeout 10000ms exceeded`，
+  卡在 `page.get_by_text("专业模式", exact=True).first.click(timeout=10000)`。
+  同一批还有**第二个看似无关的症状**：`（生成结果 tab 未就绪，重试 1/4…4/4）` 全灭，
+  紧接着 `生成前资产页已有 0 张卡片`（实际上资产页有 30 张）。
+  **两个症状同一个病根，但日志里完全看不出关联。**
+- **根因**（**实测抓出来的，不是猜的**）：
+  妙响新加了一个「**写歌升级为 Agent 模式**」引导弹窗，DOM 结构：
+  - `.semi-modal-mask` —— `position:fixed` / `z-index:1000` / **覆盖 100% 屏幕** / `pointer-events:auto`
+  - `.semi-modal-wrap.semi-modal-wrap-center` —— 里面是 `.agent-mode-guide-modal-header` /
+    `.agent-mode-guide-modal-content`，文案「写歌升级为Agent模式 ① 输入灵感 ② 多轮对话 ③ 生成作品 [去创作]」
+  - 关闭按钮：`button[aria-label="close"]`（class 含 `semi-button-tertiary semi-button-size-small`）
+  Playwright 的报错原文只写了：
+  ```
+  <div class="semiModalHeader-GnufRy agent-mode-guide-modal-header">…</div>
+  from <div class="semi-portal">…</div> subtree intercepts pointer events
+  ```
+  **它只告诉你「谁挡住了」，不告诉你「那是弹窗」** —— 极易误判成「平台改版、选择器失效」，
+  然后去改选择器，越改越偏。
+  **本质**：妙响侧**从头到尾没有接过 `popup_guard`** —— `miaoxiang.py` 只从 `browser_utils`
+  导入了 `clear_profile_locks / window_args / viewport_for` 三个函数，全文件 **0 处**
+  `dismiss_popups` / `goto_with_guard` / `guard_context`。
+  而 `fill_create_page` / `ensure_genresult_tab` 用的都是**裸 `page.goto`**，
+  这同时违反了 SKILL.md 自己定的调用约定（「所有跳转用 `goto_with_guard()`，不要用裸 `page.goto()`」）。
+  → 所以**平台一加浮层就全线卡死**，且两个不同页面（创作页 / 资产页）一起中招。
+- **解法**（4 处，全是接线，没有改选择器）：
+  1. `miaoxiang.py` 顶部新增 `from popup_guard import dismiss_popups, goto_with_guard, guard_context`；
+  2. `open_browser()` 收尾加 `guard_context(ctx, log=log)`（挂原生 alert/confirm + 新开页也挂）；
+  3. `fill_create_page(page, …, cfg=None)`：裸 `page.goto` → `goto_with_guard`，
+     并在点「专业模式」**之前**显式 `dismiss_popups(page, cfg=cfg, log=log)`；
+  4. `ensure_genresult_tab(page, tries=4, cfg=None)` / `open_assets_and_tab(page, cfg=None)` /
+     `wait_new_cards(…, cfg=None)`：goto 改走 `goto_with_guard`，
+     **每一轮重试前**先 `dismiss_popups`（只切 tab 不清浮层 = 白重试 4 次）；
+     `do_gen` 的 4 个调用点补传 `cfg=cfg`。
+  ⚠️ **`config.json` 一个字都没改** —— 见下方验证。
+- **验证**（两层，都留了证据）：
+  1. **先建只读探针** `scripts/probe_mx_popup.py`（新增，零额度消耗：不点生成/导出/下载）。
+     它除了 dump 浮层 DOM，还做两件关键事：
+     ① **命中测试** —— 在「专业模式」按钮中心跑 `elementFromPoint`，
+        确认吃点击的确实是 `agent-mode-guide-modal-header`（这是根因的硬证据）；
+     ② **实测守卫** —— 真跑一次 `dismiss_popups()`，再看浮层还在不在。
+     结果：`dismiss_popups 返回 1`，**挡路浮层 2 → 0**，命中测试恢复正常
+     （落回 `BUTTON.semi-button…aiMusicCreationModeButtons`）。
+     → **证明 `use_overlay_scope`（fixed/absolute + z≥100 + 覆盖≥40%）已经能认出并关掉它**，
+       所以 `extra_popup_roots` **不需要**新增选择器。
+       （⚠️ 这里如果只 dump DOM 不真点，会得出「应该能关」的假结论。
+         **「看起来能找到按钮」和「点了真的关掉」是两件事。**）
+  2. **重跑 `--gen` 的真实日志**：两个症状同时消失 ——
+     `生成前资产页已有 30 张卡片`（不再是「0 张」）、`· 切到「专业模式」` 通过、
+     `· 已选模型：Sway v5.5`、`歌词：填入 518 字 / 编辑器回读 568 字`、
+     `✓ 已点「生成歌曲」`。
+- **教训**：
+  1. **「XX intercepts pointer events」几乎总是弹窗问题，不是选择器问题。** 看到这句先清浮层，
+     别先改 selector。
+  2. **同一个脚本里「有的跳转走 goto_with_guard、有的走裸 goto」= 埋雷。** 抽检方式：
+     `grep -n "page.goto(" *.py`，凡是业务逻辑里的裸 goto 都是待爆点。
+  3. **失败要早、要没成本。** 这次崩在「点生成」之前，所以**零额度损失**；
+     如果崩在生成之后，就是白烧一次额度。**把清障放在最前面的步骤上，是最省钱的顺序。**
+  4. **两个看似无关的症状（创作页点不动 + 资产页 tab 切不过去）可能是同一个弹窗。**
+     修完一个再看另一个还犯不犯，别当成两个 bug 分头修。
+- **来源**：自己 debug（探针 + 命中测试 + 真实重跑三重验证）
+
+---
+
 ## 2026-09-17 · 番茄签署 · 签完后签署页会「跳走」，「签署成功」四个字随之消失 → 脚本永远等不到
 
 - **现象**：用户 19:33 说「已发布了」，而脚本 19:36 还在打印
