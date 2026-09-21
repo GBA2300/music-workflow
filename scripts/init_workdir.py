@@ -52,6 +52,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 #    踩过两次：popup_guard.py（被 import 的模块）、miaoxiang.py（主力生成脚本）。
 COPY_FILES = [
     "miaoxiang.py",        # ★ 主力生成端（妙响 / 抖音音乐创作实验室）
+    "fanqie_chart.py",     # ★ 榜单采集（纪律 0 第一步：番茄音乐首页热门歌曲 + 在听人数）
+    "fanqie_lyric.py",     # ★ 歌词拆解（纪律 0 核心：采详情页歌词 + 结构/记忆点/韵脚/意象分析）
     "cover.py",            # 封面生成（被 miaoxiang.py / generate.py 调用）
     "migrate_library.py",  # 把散落的曲库搬到别的盘（省系统盘）
     "purge_bin.py",        # 清回收站里属于某目录的条目（真删才腾空间；见 SKILL.md 存储章节）
