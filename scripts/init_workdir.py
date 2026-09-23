@@ -25,6 +25,9 @@ music-workflow —— 一键初始化工作目录
     library/              曲库（初始为空）
     lyrics/               歌词 txt（初始为空）
     published.json        已发布记录（初始 {}，防止重复发布）
+    versions_ledger.json  版本账本（登记「这首歌最终几版」，初始 {}）
+                          ⚠️ 决定曲库目录名：双版 → <歌名>-01/-02，单版 → <歌名>。
+                          不登记就会在「分两次下两版」时把第 1 版覆盖掉（见 LEARNED.md 2026-09-21）。
 
 ★ 隐私红线：登录态（Cookie/凭证）绝不放在本工作目录或 skill 文件夹内。
   它存在「系统每用户私有目录」%LOCALAPPDATA%/music-workflow/profiles/，
@@ -143,13 +146,22 @@ def main():
         with open(pj, "w", encoding="utf-8") as fh:
             json.dump({}, fh, ensure_ascii=False, indent=2)
 
+    # ── 初始化 versions_ledger.json（版本账本，空）──
+    # ⚠️ 2026-09-21 新增：决定每首歌的曲库目录名（双版 → -01/-02，单版 → 裸名）。
+    #    没有它，同一首歌分两次下（--gen 下第1版、--redownload 补第2版）会落到
+    #    **同一个目录**，后者覆盖前者 —— 实测第 1 版音频被冲掉。详见 references/LEARNED.md。
+    lj = os.path.join(workdir, "versions_ledger.json")
+    if not os.path.exists(lj):
+        with open(lj, "w", encoding="utf-8") as fh:
+            json.dump({}, fh, ensure_ascii=False, indent=2)
+
     # ── 结果 ──
     print("")
     print("✅ 工作目录已初始化：{0}".format(workdir))
     print("   包含脚本：miaoxiang.py（主力生成）/ cover.py / fanqie_upload.py / "
           "verify_published.py / init_workdir.py …")
     print("   已建空目录：library/ lyrics/")
-    print("   已创建：tasks.csv（歌单模板）、published.json（空）")
+    print("   已创建：tasks.csv（歌单模板）、published.json（空）、versions_ledger.json（空）")
     print("   登录态不在工作目录里，存在系统每用户私有目录")
     print("   （%LOCALAPPDATA%/music-workflow/profiles/），首次运行各自登录自己的账号")
     print("")

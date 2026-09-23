@@ -359,17 +359,41 @@ def ask_download_mode(default=DEFAULT_DOWNLOAD_MODE):
     return DOWNLOAD_MODE_FIRST
 
 
-def song_dir_for(title, version_index, mode):
-    """这首歌该落到 library/ 下的哪个目录名（番茄端 load_song() 的契约）。
+def lib_folder_names(title, n_versions):
+    """这首歌在 library/ 下**应该**占用的全部目录名（供发布端登记 / 幂等自检用）。
 
-    只下第一版 → <歌名>
-    两版都下   → <歌名>-01 / <歌名>-02（version_index 从 0 开始）
+    单版 → ["<歌名>"]        双版 → ["<歌名>-01", "<歌名>-02"]
     """
     from generate import safe_name  # 延迟导入：避开 generate.py 的模块级副作用
     base = safe_name(title)
-    if mode == DOWNLOAD_MODE_BOTH:
-        return f"{base}-{version_index + 1:02d}"
-    return base
+    if n_versions is None or n_versions <= 1:
+        return [base]
+    return [f"{base}-{i + 1:02d}" for i in range(n_versions)]
+
+
+def song_dir_for(title, version_index, mode, n_versions=None):
+    """这首歌该落到 library/ 下的哪个目录名（番茄端 load_song() 的契约）。
+
+    单版 → <歌名>
+    双版 → <歌名>-01 / <歌名>-02（version_index 从 0 开始）
+
+    ⚠️⚠️ 2026-09-21 修（严重覆盖 bug）：原来判定只看 `mode`（**本次运行的下载策略**），
+       `mode==first` 一律返回裸歌名。可「下载策略」是**每次运行各自决定**的，同一首歌
+       可能被分两次下完 —— 实测：
+         第 1 次 `--gen`（默认策略 first）下第 1 版 → library/<歌名>/
+         第 2 次 `--redownload --card` 补第 2 版，若策略又是 first → **同一个 library/<歌名>/**
+       两条路径撞在一起，save_song() 里 `shutil.copyfile` 无条件覆盖 →
+       **第 1 版音频被第 2 版冲掉**（实测 4 个产物只剩 2 个，两个目录的 version_index 都是 1）。
+       根因是「目录名取决于写它时那次运行的策略」，而不是取决于**这首歌最终是几版**。
+      → 现在改为优先看 `n_versions`（这首歌的**最终版数**，由账本 `MULTI_VERSION_TITLES` 给出）：
+        最终双版 → 一律 -01/-02（不管本次只下其中哪一版）
+        最终单版 → 裸歌名
+       `n_versions` 未知时才退回旧的 `mode` 判定（保证旧调用不炸）。
+    """
+    names = lib_folder_names(title, n_versions if n_versions is not None
+                             else (None if mode != DOWNLOAD_MODE_BOTH else GEN_VERSIONS_PER_LYRIC))
+    idx = max(0, min(int(version_index), len(names) - 1))
+    return names[idx]
 
 
 # ─────────────────────────────────────────────── 学习录制
@@ -971,6 +995,55 @@ def dismiss_overlays(page, rounds=4):
 
 VERSION2_SUFFIX = "（动听版）"
 
+# ─────────────────────────────────────────────────────────────
+# 「哪些歌是双版」账本。
+# ⚠️⚠️ 2026-09-21 新增（配合 song_dir_for 的覆盖 bug 修复）：
+#    目录名必须由「这首歌最终是几版」决定，而不是由「写它时那次运行的下载策略」决定。
+#    否则同一首歌分两次下（--gen 下第 1 版、--redownload 补第 2 版）会落到同一个目录，
+#    后者无条件覆盖前者 —— 实测第 1 版音频被冲掉。
+#    每首歌**下满版数后必须登记到这里**（save_song 会自动登记，不必手工维护）。
+#    键 = 歌名；值 = 这首歌最终的版数。
+# ─────────────────────────────────────────────────────────────
+LEDGER_FILE = "versions_ledger.json"
+
+
+def _ledger_path(workdir):
+    return Path(workdir) / LEDGER_FILE
+
+
+def load_ledger(workdir):
+    try:
+        return json.loads(_ledger_path(workdir).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_ledger(workdir, d):
+    try:
+        _ledger_path(workdir).write_text(
+            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log(f"  ⚠ 版本账本写入失败（不影响出歌）：{e}")
+
+
+def record_versions(workdir, title, n_versions):
+    """登记这首歌最终的版数。只有**变多**时才写（避免把双版降回单版）。"""
+    d = load_ledger(workdir)
+    old = int(d.get(title, 0) or 0)
+    if int(n_versions) > old:
+        d[title] = int(n_versions)
+        save_ledger(workdir, d)
+    return d
+
+
+def versions_for(workdir, title):
+    """查这首歌最终几版；没登记过返回 None（调用方退回旧判定）。"""
+    v = load_ledger(workdir).get(title)
+    try:
+        return int(v) if v else None
+    except Exception:
+        return None
+
 
 def version_display_title(title, version_index):
     """两版必须有区分名（用户 2026-09-12 明确要求）：
@@ -1173,6 +1246,11 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
     min_bytes = cfg.get("download", {}).get("min_audio_bytes", 200000)
     saved = []
     seen_md5 = {}                      # md5 → folder，防同一音频被存成两首
+    # 这首歌最终几版：取「账本已登记值」和「本批实际下到数」的较大者。
+    # 双版就意味着目录必须是 -01/-02，哪怕本批只下到其中一版（防止两次运行撞同一目录）。
+    n_versions = max(versions_for(workdir, task["title"]) or 0, len(items)) or 1
+    log(f"  版本规划：本批 {len(items)} 版｜累计账本 {n_versions} 版"
+        f"｜目录名 {lib_folder_names(task['title'], n_versions)}")
     for i, it in enumerate(items):
         tmp, plat_title = it[0], it[1]
         disp_title = it[2] if len(it) > 2 and it[2] else version_display_title(task["title"], i)
@@ -1180,8 +1258,31 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
         #    出现「title=（动听版） 却 version_index=0」的矛盾记录。
         #    → 改为**从 disp_title 反推**，它才是权威（带「（动听版）」就是第 2 版）。
         v_idx = 1 if VERSION2_SUFFIX in disp_title else 0
-        folder = song_dir_for(task["title"], v_idx, mode)
+        # ⚠️ 2026-09-21 覆盖 bug 修复：目录名按「最终版数」定，不再按本次 mode 定。
+        folder = song_dir_for(task["title"], v_idx, mode, n_versions=n_versions)
         dest_dir = lib / folder
+        # ⚠️⚠️ 2026-09-21 新增硬护栏：目标目录已有 audio.mp3、且内容不同 → **绝不覆盖**，
+        #    自动让位到 <歌名>-NN（NN 顺延）。宁可多出一个目录，也不能让用户的音频凭空消失。
+        guard_existing = dest_dir / "audio.mp3"
+        if guard_existing.exists():
+            import hashlib as _hl
+            _new = _hl.md5(Path(tmp).read_bytes()).hexdigest()
+            _old = _hl.md5(guard_existing.read_bytes()).hexdigest()
+            if _new != _old:
+                base = folder
+                n = 2
+                while True:
+                    cand = f"{base}-{n:02d}"
+                    if not (lib / cand / "audio.mp3").exists():
+                        log(f"  ⚠ {folder}/ 已有别的音频（md5 {_old[:8]}），本次内容不同"
+                            f"（md5 {_new[:8]}）→ 让位到 {cand}/ 保存，不覆盖")
+                        folder = cand
+                        dest_dir = lib / folder
+                        break
+                    n += 1
+            else:
+                log(f"  · {folder}/ 已有完全相同的音频，重复下载，跳过")
+                continue
         dest_dir.mkdir(parents=True, exist_ok=True)
         size = tmp.stat().st_size
         if size < min_bytes:
@@ -1238,6 +1339,9 @@ def save_song(workdir, cfg, task, lyric, mode, items, model=DEFAULT_MODEL):
             log(f"  ⚠ 封面失败（不影响音频）：{e}")
         log(f"  ✓ {folder}/  audio.mp3 ({size/1024/1024:.1f} MB)  平台名《{plat_title}》")
         saved.append(dest_dir)
+    # 登记「这首歌最终几版」→ 下次不管用哪种下载策略，目录名都稳定一致（防再次覆盖）
+    if saved:
+        record_versions(workdir, task["title"], n_versions)
     return saved
 
 

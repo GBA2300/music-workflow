@@ -48,6 +48,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -71,6 +72,12 @@ if ROOT is None:
     ROOT = _cwd if (_cwd / "tasks.csv").exists() else SCRIPT_DIR
 LIB_ROOT = ROOT / "library"
 UPLOAD_URL = "https://www.novelfm.com/creator/music/finished/ugc/uploadProduct"
+
+# 「是否为AI作品」要勾的答案。
+# ⚠️ 2026-09-23 定：本流水线用妙响生成，歌**确实是 AI 生成的**，所以按实际情况勾「是」。
+#    番茄页面原文：「需如实勾选，若存在未如实申报的情况，可能无法通过审核」。
+#    改这个值就能切换（选项文字需与页面一致；脚本会按文字定位并把实际选中项回读打印）。
+AI_USAGE_ANSWER = "是"
 PROFILE = user_profile("profile_fanqie")         # 每用户私有登录态（%LOCALAPPDATA%/music-workflow/profiles/），绝不在 skill 内
 
 # 统一的浏览器启动参数。
@@ -594,18 +601,76 @@ async def upload_cover(page, cover_id, cover):
             log(f"    ⚠️ cropper 流程异常（status={st}），继续")
 
 
-async def select_ai_type(page, ai_id):
+async def select_ai_type(page, ai_id, want="是"):
+    """勾「是否为AI作品」。
+
+    ⚠️⚠️ 2026-09-23 修（真缺陷）：原来无脑点 `label.arco-radio` 的 **`.first`**，
+       并硬编码打印「→ 不使用AI」。但页面上**第一个选项是「是」**，第二个才是「否」——
+       于是**点成了「是」却自报「不使用AI」**，日志与事实相反。
+       实测证据：`_fanqie_step1.png` 里该项橙色实心圆点在「是」上，而日志写着「不使用AI已选」。
+       即使「是」对我们是事实正确的（歌确实由 AI 生成），
+       **「动作语义 ≠ 断言语义」这个写法必须修掉** —— 它自报成功、从不回读校验点了哪个。
+
+    现在的做法：
+      1. 按**选项文字**定位（而不是靠 `.first` 的位置假设）
+      2. 优先用 `want` 指定的选项；找不到就退回第一个，并**如实打印**点中的是哪个
+      3. 点击后**回读** `arco-radio-checked` 所在 label 的文字，确认真的选中了
+    """
+    scope = page.locator(f"#{ai_id}")
     try:
-        cls = (await page.locator(f"#{ai_id} label.arco-radio").first.get_attribute("class")) or ""
+        labels = scope.locator("label.arco-radio")
+        n = await labels.count()
     except Exception:
-        cls = ""
-    if "arco-radio-checked" in cls:
-        log(f"    ⏭  AI 使用类型已选（#{ai_id}），跳过断点续传")
+        n = 0
+    if not n:
+        log(f"    ⚠️ 没找到 AI 使用类型控件（#{ai_id}），跳过")
         return
-    log(f"[填表] AI 使用类型 → 不使用AI（#{ai_id} 第一个 radio）")
-    await page.locator(f"#{ai_id} label.arco-radio").first.click()
+
+    # 收集「文字 → index」
+    opts = []
+    for i in range(n):
+        try:
+            txt = re.sub(r"\s+", "", (await labels.nth(i).inner_text()) or "")
+        except Exception:
+            txt = ""
+        opts.append((i, txt))
+    log(f"    · AI 使用类型选项：{[t or '(空)' for _, t in opts]}")
+
+    # 已选中就直接跳过（断点续传）
+    for i, txt in opts:
+        try:
+            cls = (await labels.nth(i).get_attribute("class")) or ""
+        except Exception:
+            cls = ""
+        if "arco-radio-checked" in cls:
+            log(f"    ⏭  AI 使用类型已选「{txt or i}」，跳过")
+            return
+
+    # 选目标项：优先文字包含 want，否则第一个
+    pick = next((i for i, t in opts if want and want in t), opts[0][0])
+    pick_txt = dict(opts).get(pick, "")
+    if want and want not in pick_txt:
+        log(f"    ⚠️ 没找到「{want}」选项，改选第一个「{pick_txt}」")
+    log(f"[填表] AI 使用类型 → 「{pick_txt}」（#{ai_id} 第 {pick + 1} 个 radio）")
+    await labels.nth(pick).click()
     await page.wait_for_timeout(400)
-    log("    ✓ AI 使用类型已选")
+
+    # ★ 回读校验：真的选中了吗？选中的是哪个？
+    got = None
+    for i, txt in opts:
+        try:
+            cls = (await labels.nth(i).get_attribute("class")) or ""
+        except Exception:
+            cls = ""
+        if "arco-radio-checked" in cls:
+            got = txt
+            break
+    if got is None:
+        log(f"    ✗ AI 使用类型点击后**没有任何选项处于选中态**，请人工核对 #{ai_id}")
+    elif got == pick_txt:
+        log(f"    ✓ AI 使用类型已选「{got}」（已回读校验）")
+    else:
+        log(f"    ⚠️ AI 使用类型点了「{pick_txt}」但实际选中「{got}」，已按实际记录")
 
 
 async def wait_all_uploads_complete(page, n, audio_names, timeout=90):
@@ -1413,6 +1478,21 @@ async def main():
     log(f"待发布歌单（{len(songs)} 首）：{songs}")
     log(f"已发布、本次跳过：{sorted(published) or '无'}")
 
+    # ── 幂等自检（★ 2026-09-23 新增）──
+    # ⚠️ 为什么要有：自动登记靠「在页面上读到签署成功字样」，但实测**签完会直接跳回登录页**，
+    #    那几个字根本没机会被读到 → 登记落空 → 这批歌下次被当成新歌**重复发布**。
+    #    这里在开跑前把「曲库里有、但发布记录里没有」的目录列清楚，让人一眼看出
+    #    「这批是真新歌」还是「上一批漏登记了」。
+    if not args.songs and LIB_ROOT.exists():
+        lib_dirs = {d.name for d in LIB_ROOT.iterdir() if d.is_dir()}
+        unseen = sorted(lib_dirs - published)
+        if unseen:
+            log(f"⚠️ 幂等自检：曲库有 {len(unseen)} 个目录未见于发布记录 → 本次将发布它们：{unseen}")
+            log("   （若其中有你**已签过合同**的歌，说明上次登记漏了 —— "
+                "先按 Ctrl+C 停掉，再用 --mark-published <文件夹名,...> 补记，别重复发）")
+        else:
+            log("✓ 幂等自检：曲库目录与发布记录一致，无遗漏")
+
     # 同名歌曲自动加 -01 / -02 序号区分
     titles = [load_song(f)[4] for f in songs]
     dup = len(titles) > len(set(titles))
@@ -1453,7 +1533,7 @@ async def main():
                 await add_self(page, f"songs_{i}_producers", f"songs_{i}_name_input", "制作人")
                 await add_self(page, f"songs_{i}_singer_id_list", f"songs_{i}_name_input", "歌手")
                 await upload_cover(page, f"songs_{i}_coverImage_input", cover)
-                await select_ai_type(page, f"songs_{i}_ai_usage_type")
+                await select_ai_type(page, f"songs_{i}_ai_usage_type", want=AI_USAGE_ANSWER)
                 await page.screenshot(
                     path=os.path.join(ROOT, f"_fanqie_card{i}.png")
                 )

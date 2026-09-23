@@ -164,6 +164,22 @@ def analyze(lyrics: list[str]) -> dict:
     # 3) 句长
     lens = [len(l) for l in lyrics]
 
+    # 3b) ★ 2026-09-21 新增：句长**按主歌/副歌分层**统计。
+    #     ⚠️ 为什么必须分层：原来只有一个全文 `avg_line_len`，配方卡把它当成
+    #        「单行字数上限」发给落笔环节，结果**副歌永远超标** —— 因为全文均值
+    #        混合了主歌（短句）与副歌（长句），拿混合值去卡副歌等于要求副歌跟主歌一样短。
+    #        实测 342 行：全文均值 9.44 / P75 11 / P90 13 / 最大 16；
+    #        14~16 字仅占 7.0%，而且**全是副歌**，形态是「两个分句 + 空格」。
+    #        → 主歌线 ≈ ≤11 字；副歌线 ≈ 13~16 字（双分句）。两把尺子必须分开给。
+    CJK_V = re.compile(r"[\u4e00-\u9fff]")
+    chorus_line_len = [len(l) for l in best_block] if best_block else []
+    # 主歌 = 全文里不属于副歌块的汉字行（用块内容做集合剔除）
+    block_set = set(best_block)
+    verse_line_len = [len(l) for l in lyrics if l not in block_set]
+    # 副歌块里「双分句」占比：行内有空格且空格两侧各有汉字
+    two_clause = sum(1 for l in best_block
+                     if " " in l.strip() and all(CJK_V.search(p) for p in l.strip().split(" ") if p))
+
     # 4) 韵脚：行尾字频次
     #    ⚠️ 只统计**汉字**行尾 —— 榜单里混有梵语/韩语歌（如《祈神怜》），
     #       不过滤的话 `요(12)`、`व(7)` 会挤进「高频行尾字」，把中文韵脚规律冲淡。
@@ -180,6 +196,12 @@ def analyze(lyrics: list[str]) -> dict:
         "lines": len(lyrics),
         "chars": sum(lens),
         "avg_line_len": round(sum(lens) / max(1, len(lens)), 1),
+        # ★ 2026-09-21：分层句长（主歌 vs 副歌），落笔时**分开**用两把尺子
+        "verse_avg_len": round(sum(verse_line_len) / max(1, len(verse_line_len)), 1),
+        "verse_max_len": max(verse_line_len) if verse_line_len else 0,
+        "chorus_avg_len": round(sum(chorus_line_len) / max(1, len(chorus_line_len)), 1),
+        "chorus_max_len": max(chorus_line_len) if chorus_line_len else 0,
+        "chorus_two_clause_ratio": round(two_clause / max(1, len(chorus_line_len)), 2),
         "min_line_len": min(lens), "max_line_len": max(lens),
         "hook": hook,
         "hook_repeat": cnt.get(hook, 1),

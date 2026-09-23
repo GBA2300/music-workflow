@@ -339,6 +339,13 @@ def structure_recipe(songs: list[dict]) -> dict:
         return {}
     lines = sorted(a["lines"] for a in A)
     avg_len = sorted(a["avg_line_len"] for a in A)
+    # ★ 2026-09-21：主歌/副歌**分开**统计句长 —— 一把尺子量不了两种结构（见 fanqie_lyric.analyze 的说明）
+    v_len = sorted(a["verse_avg_len"] for a in A if a.get("verse_avg_len"))
+    v_max = sorted(a["verse_max_len"] for a in A if a.get("verse_max_len"))
+    c_len = sorted(a["chorus_avg_len"] for a in A if a.get("chorus_avg_len"))
+    c_max = sorted(a["chorus_max_len"] for a in A if a.get("chorus_max_len"))
+    twin = sorted(a["chorus_two_clause_ratio"] for a in A
+                  if a.get("chorus_two_clause_ratio") is not None)
     csize = sorted(a["chorus_size"] for a in A if a.get("chorus_size"))
     crep = sorted(a["chorus_repeat"] for a in A if a.get("chorus_repeat"))
     hrep = sorted(a["hook_repeat"] for a in A)
@@ -363,6 +370,14 @@ def structure_recipe(songs: list[dict]) -> dict:
         "avg_line_len_median": med(avg_len),
         "avg_line_len_min": avg_len[0], "avg_line_len_max": avg_len[-1],
         "avg_line_len_p75": pct(avg_len, 0.75),
+        # ★ 分层句长（2026-09-21）：主歌短句 / 副歌长句，落笔时分开用
+        "verse_len_median": med(v_len) if v_len else None,
+        "verse_len_p75": pct(v_len, 0.75) if v_len else None,
+        "verse_len_max": v_max[-1] if v_max else None,
+        "chorus_len_median": med(c_len) if c_len else None,
+        "chorus_len_p75": pct(c_len, 0.75) if c_len else None,
+        "chorus_len_max": c_max[-1] if c_max else None,
+        "chorus_two_clause_median": med(twin) if twin else None,
         "chorus_size_median": med(csize),
         "chorus_size_p25": pct(csize, 0.25), "chorus_size_p75": pct(csize, 0.75),
         "chorus_size_range": [csize[0], csize[-1]] if csize else [],
@@ -487,9 +502,21 @@ def render(st: dict) -> str:
         L.append("|---|---|---|")
         L.append("| 总行数 | **%s~%s 行**（中位 %s） | %d 首样本 P25~P75 |"
                  % (sr["lines_p25"], sr["lines_p75"], ri(sr["lines_median"]), sr["songs"]))
-        L.append("| 单行字数 | **约 %s 字**（多数 %s~%s） | 样本均值 |"
-                 % (ri(sr["avg_line_len_median"]), ri(sr["avg_line_len_min"]),
-                    ri(sr["avg_line_len_p75"])))
+        # ★ 2026-09-21：原「单行字数 约 X 字」把全文混合均值当上限发出去，
+        #    副歌永远超标（副歌本来就是长句）。改为**主歌/副歌两把尺子**。
+        if sr.get("verse_len_median") and sr.get("chorus_len_median"):
+            L.append("| 单行字数（**主歌**） | **≤ %s 字**（中位 %s，多数不到 %s） | 主歌行 P75 |"
+                     % (ri(sr["verse_len_p75"]), ri(sr["verse_len_median"]),
+                        ri(sr["verse_len_p75"])))
+            L.append("| 单行字数（**副歌**） | **%s~%s 字**（中位 %s，最长 %s） | 副歌行 P75 |"
+                     % (ri(sr["chorus_len_median"]), ri(sr["chorus_len_p75"]),
+                        ri(sr["chorus_len_median"]), ri(sr["chorus_len_max"])))
+            L.append("| 全文单行字数（参考） | 约 %s 字（混合口径，**别当上限用**） | 样本均值 |"
+                     % ri(sr["avg_line_len_median"]))
+        else:
+            L.append("| 单行字数 | **约 %s 字**（多数 %s~%s） | 样本均值 |"
+                     % (ri(sr["avg_line_len_median"]), ri(sr["avg_line_len_min"]),
+                        ri(sr["avg_line_len_p75"])))
         L.append("| 副歌块大小 | **%s 行**（多数 %s~%s） | 样本中位 |"
                  % (ri(sr["chorus_size_median"]), ri(sr["chorus_size_p25"]),
                     ri(sr["chorus_size_p75"])))
@@ -499,6 +526,15 @@ def render(st: dict) -> str:
                  % (ri(sr["hook_repeat_min"]), ri(sr["hook_repeat_median"])))
         L.append("| 有「整块重复副歌」的歌 | **%s%%** | 样本占比 |" % sr["block_repeat_pct"])
         L.append("")
+        if sr.get("chorus_two_clause_median") is not None:
+            L.append("> ⚠️ **两条线别用错**：主歌是**短句**（≤%s 字），副歌是**长句**"
+                     "（%s~%s 字，形态是「**两个分句 + 空格**」，如「山风山风等等我 带我去山那头」）。"
+                     "榜上样本里 %s%% 的副歌行是这种双分句结构。"
+                     "**别拿主歌的字数上限去卡副歌** —— 副歌写成短句会失去「一整句压上来」的气势。"
+                     % (ri(sr["verse_len_p75"]), ri(sr["chorus_len_median"]),
+                        ri(sr["chorus_len_p75"]),
+                        round(100 * sr["chorus_two_clause_median"])))
+            L.append("")
         L.append("> **怎么用**：**结构先定死再写词** —— 先排 %s 行骨架、留出 %s 行的副歌块，"
                  "把整块原样重复 ≥%s 次，hook（副歌第一句）重复 ≥%s 次。"
                  "**记住：番茄爆款靠「整块重复」，不是靠提炼两句口号。**"
@@ -566,8 +602,14 @@ def render(st: dict) -> str:
         L.append("> 歌名 **%s~%s 字白话短词**（可配版本后缀：%s）；"
                  % (tr["len_p25"], tr["len_p75"],
                     "、".join(k for k, _ in (tr["suffix_top"] or [])[:3]) or "DJ版 / 深情版"))
-        L.append("> 全篇 **%s~%s 行**，单行 **约 %s 字**；"
-                 % (sr["lines_p25"], sr["lines_p75"], ri(sr["avg_line_len_median"])))
+        if sr.get("verse_len_median") and sr.get("chorus_len_median"):
+            L.append("> 全篇 **%s~%s 行**；**主歌**单行 ≤%s 字（短句），"
+                     "**副歌**单行 %s~%s 字（长句，两个分句 + 空格）；"
+                     % (sr["lines_p25"], sr["lines_p75"], ri(sr["verse_len_p75"]),
+                        ri(sr["chorus_len_median"]), ri(sr["chorus_len_p75"])))
+        else:
+            L.append("> 全篇 **%s~%s 行**，单行 **约 %s 字**；"
+                     % (sr["lines_p25"], sr["lines_p75"], ri(sr["avg_line_len_median"])))
         L.append("> 副歌写成 **%s 行一整块**，**原样重复 ≥%s 次**，"
                  % (ri(sr["chorus_size_median"]), ri(sr["chorus_repeat_min"])))
         L.append("> **副歌第一句 = hook**，全篇重复 **≥%s 次**；"
@@ -597,7 +639,12 @@ def render(st: dict) -> str:
         L.append("| 检查项 | 达标线 |")
         L.append("|---|---|")
         L.append("| 总行数 | %s~%s 行 |" % (sr["lines_p25"], sr["lines_p75"]))
-        L.append("| 单行字数 | 不超过 %s 字 |" % ri(sr["avg_line_len_p75"]))
+        if sr.get("verse_len_median") and sr.get("chorus_len_median"):
+            L.append("| 单行字数（**主歌**）| ≤ %s 字 |" % ri(sr["verse_len_p75"]))
+            L.append("| 单行字数（**副歌**）| %s~%s 字，且多数写成「两个分句 + 空格」 |"
+                     % (ri(sr["chorus_len_median"]), ri(sr["chorus_len_p75"])))
+        else:
+            L.append("| 单行字数 | 不超过 %s 字 |" % ri(sr["avg_line_len_p75"]))
         L.append("| 副歌是「一整块」 | 块 ≥%s 行 |" % ri(sr["chorus_size_median"]))
         L.append("| 副歌整块原样重复 | ≥%s 次 |" % ri(sr["chorus_repeat_min"]))
         L.append("| 副歌第一句 = hook 且重复 | ≥%s 次 |" % ri(sr["hook_repeat_min"]))
