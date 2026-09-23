@@ -1294,6 +1294,21 @@ async def step3_sign_contract(page, ctx, folders=None):
     #     C. 签署页被跳成了登录页/首页（URL 不再含签署特征，且正文出现登录字样）
     sign_seen_once = False
     seen_sign_urls = set()
+    # ⚠️⚠️ 2026-09-23 修（真 bug，实测崩溃）：下面 B 判据原来引用了 `b_already_marked`，
+    #    但这个变量**从来没有定义过**（既不在这行前面、也不在函数签名里、也不是全局）→
+    #    `NameError: name 'b_already_marked' is not defined`，整个流程在这里**崩掉**。
+    #    实测现象：用户 19:43 签完合同，日志前一行还在「等待你完成签署…（剩余 18 分钟）」，
+    #    下一行就 `⚠️ 流程异常: name 'b_already_marked' is not defined` + 长 traceback。
+    #    **后果比崩溃更严重**：崩在 `mark_published()` 之前 →
+    #    自动登记**没执行** → 4 首歌没进 published.json → 下次会被当新歌**重复发布**。
+    #    （本次是靠事后手工补记兜住的，见 LEARNED.md 同日另一条。）
+    #
+    #    它的**本意**：B 判据「签署页全都消失了」不能无脑判成功 —— 签署页也可能是
+    #    **被我们自己关掉/被 dedupe 清掉**的，那不算签完。所以要有一个「是我们自己动手的」
+    #    标记。而代码里确实有 `dedupe_sign_tabs(ctx)`（只关重复的、至少留一个）这个动作，
+    #    所以这里如实设置：**只有当本轮我们主动做过 dedupe 时才置位**，
+    #    且置位后**只抑制一次** B 判据，避免误判。
+    b_already_marked = False
     login_left_marks = ("重新登录", "请登录", "登录后", "手机号登录", "扫码登录")
     while time.time() < deadline:
         try:
@@ -1312,6 +1327,9 @@ async def step3_sign_contract(page, ctx, folders=None):
                 except Exception:
                     pass
             await dedupe_sign_tabs(ctx)
+            # dedupe 只关「重复的」签署标签、至少留一个；但为了不把「我们自己关过窗」
+            # 误当成「用户签完跳走了」，这里如实标记一下（B 判据会因此多等一轮）。
+            b_already_marked = True
 
         # ★ B 判据：签署页「全都消失了」= 签完跳走了（用户 2026-09-17 证实的行为）
         if sign_seen_once and not esign_seen and not b_already_marked:
@@ -1547,13 +1565,36 @@ async def main():
             await page.screenshot(path=os.path.join(ROOT, "_fanqie_step2.png"))
 
             ok = await step3_sign_contract(page, ctx, songs)
-            await page.screenshot(path=os.path.join(ROOT, "_fanqie_final.png"))
-            log(f"✓ 最终截图 _fanqie_final.png（合同签署：{'已完成=已发布' if ok else '待你手动完成'}）")
+            # ⚠️ 2026-09-23：截图必须包起来 —— 用户关掉浏览器后这里会抛
+            #    TargetClosedError，而它**会覆盖掉真正有用的返回值/异常**。
+            #    实测踩到：step3 崩在 NameError 上，但 traceback 里最外层显示的却是
+            #    「Page.screenshot: Target page, context or browser has been closed」，
+            #    真正的原因（b_already_marked 未定义）被埋在中段，极难定位。
+            try:
+                await page.screenshot(path=os.path.join(ROOT, "_fanqie_final.png"))
+                log(f"✓ 最终截图 _fanqie_final.png（合同签署：{'已完成=已发布' if ok else '待你手动完成'}）")
+            except Exception:
+                log(f"    （浏览器已关闭，跳过最终截图；合同签署判定："
+                    f"{'已完成=已发布' if ok else '待手动完成'}）")
         except Exception as e:
             log(f"⚠️ 流程异常: {e}")
-            await page.screenshot(path=os.path.join(ROOT, "_fanqie_error.png"))
-            log("   已截图 _fanqie_error.png，浏览器保持打开供你手动继续")
+            try:
+                await page.screenshot(path=os.path.join(ROOT, "_fanqie_error.png"))
+                log("   已截图 _fanqie_error.png，浏览器保持打开供你手动继续")
+            except Exception:
+                log("   （浏览器已关闭，跳过异常截图）")
             log("   完整运行日志见：" + str(LOG_PATH))
+            # ★ 关键：异常路径也要给出「有没有漏登记」的结论，别让人以为没发成功却已发布
+            try:
+                _pub = load_published()
+                _miss = [f for f in songs if f not in _pub]
+                if _miss:
+                    log("   ⚠️ 这几首**未记入 published.json**：" + ",".join(_miss))
+                    log("      → 若你确认它们其实已签完合同，请运行：")
+                    log(f"        python fanqie_upload.py --mark-published {','.join(_miss)}")
+                    log("      → 否则下次运行会把它们当新歌**重复发布**！")
+            except Exception:
+                pass
 
         log("============================================================")
         log("✓ 脚本运行结束，浏览器保持打开。")
