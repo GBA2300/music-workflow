@@ -2137,3 +2137,29 @@ if sign_seen_once and any(k in body for k in login_left_marks):
 **丢了原有的历史 ID**（2493B → 402B）。文件无备份。
 **教训**：改 JSON 档一律「读 → 改键 → 写回」，**禁止构造新字典整体覆盖**。
 （该文件不被 `verify_published.py` 读取，所以不影响流程，但档案价值受损。）
+
+---
+
+## 2026-09-26（附）推送诊断：TCP「通」是假象，必须应用层深测
+
+**现象**：`socket.connect(('github.com',443))` **成功**（所以体检显示「通」），
+但 `git push` 报
+```
+fatal: unable to access '...': schannel: failed to receive handshake, SSL/TLS connection failed
+```
+
+**深测结果（同一时刻）**：
+| 通道 | 结果 |
+|---|---|
+| 直连 TLS 握手 + 发 HTTP 头 | **失败 8.1s TimeoutError** |
+| 走代理 7897 TLS 握手 + HTTP 头 | **成功 1.0s，返回 `HTTP/1.1 200 OK`** |
+
+**结论**：**TCP 握手通 ≠ 通道可用**。GFW 的常见手法就是放行 TCP、在 TLS/数据阶段阻断。
+→ **判定「能不能推」必须做应用层深测（TLS 握手 + 真正发一个 HTTP 请求头）**，
+`socket.connect` 只做第一层筛查，**不能单独用来下结论**。
+
+**处置**：`git push origin master` 直接重试即成功（Clash 节点瞬时抖动，重试 1 次就通）。
+⚠️ 但**不要因为「直连失败」就加 `-c http.proxy=` 绕过代理** —— 本次直连才是坏的那条，
+绕过代理只会更慢更失败。**永远先看代理端口 7897 的深测结果再决定走哪条。**
+
+**权威确认**：`git ls-remote origin refs/heads/master` → 远端 == 本地 `b2abc96`。
