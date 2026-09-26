@@ -636,15 +636,24 @@ async def select_ai_type(page, ai_id, want="是"):
         opts.append((i, txt))
     log(f"    · AI 使用类型选项：{[t or '(空)' for _, t in opts]}")
 
-    # 已选中就直接跳过（断点续传）
+    # 已选中且**就是目标值**才跳过（断点续传）
+    # ⚠️⚠️ 2026-09-26 修（真缺陷，与目标值冲突）：
+    #   原逻辑「只要有任意一项选中就 return」，但番茄表单**默认预选「否」**——
+    #   于是脚本把「平台的默认值」误认成「我上次填的值」，永远跳过、从不改成 want。
+    #   实测证据：本轮 6 首全部打印「AI 使用类型已选「否」，跳过」，
+    #   而常量明明是 AI_USAGE_ANSWER = "是"。结果**实际申报为「否」，与事实不符**。
+    #   教训：断点续传的判据必须是「当前值 == 目标值」，不能是「当前值非空」。
     for i, txt in opts:
         try:
             cls = (await labels.nth(i).get_attribute("class")) or ""
         except Exception:
             cls = ""
         if "arco-radio-checked" in cls:
-            log(f"    ⏭  AI 使用类型已选「{txt or i}」，跳过")
-            return
+            if want and want == txt:
+                log(f"    ⏭  AI 使用类型已选「{txt}」（=目标值），跳过")
+                return
+            log(f"    ↻  AI 使用类型当前是「{txt}」（平台默认值≠目标「{want}」），改选")
+            break
 
     # 选目标项：优先文字包含 want，否则第一个
     pick = next((i for i, t in opts if want and want in t), opts[0][0])
@@ -1294,6 +1303,21 @@ async def step3_sign_contract(page, ctx, folders=None):
     #     C. 签署页被跳成了登录页/首页（URL 不再含签署特征，且正文出现登录字样）
     sign_seen_once = False
     seen_sign_urls = set()
+    # ⚠️⚠️ 2026-09-26 修（真缺陷，**误判发布成功**，后果严重）：
+    #   本轮实测：脚本在 18:37:43 刚到达番茄自己的「已跳转签约页 / 请前往签约页完成授权签署」
+    #   页面（上面还有一颗橙色「跳转授权」按钮，**跳转都还没点**），
+    #   18:39:08 就打印「✓ 检测到电子合同签署完成 → 发布成功」并把 6 首写进 published.json。
+    #   截图 `_fanqie_final.png` 铁证：页面仍停在「跳转授权」按钮那一屏。
+    #   为什么？——判据 C 只看 `esign_seen_once and 正文命中登录标记`，
+    #   而 `esign_seen` 只要正文出现「文件签署」这类词就会置位（番茄页自己也可能有），
+    #   「登录标记」在番茄站内也有（重新登录/请登录）→ **两条件在「还没跳转」时就同时成立**。
+    #   危害：真发布没发生，却把歌记成「已发布」→ 以后永远跳过 → **永久漏发**。
+    #   修法：加一道**硬护栏** `真进过电子签` —— 必须真的出现过电子签平台域名
+    #   （letsign/电子牵）才算数。番茄自家页面无论出现什么词，都不算。
+    #   教训：判定「成功」的判据必须绑定**不可伪造的外部事实**（第三方域名/标签页），
+    #   不能只依赖我方站内文案 —— 站内文案是流程中间态，不是终态。
+    real_esign_seen = False
+    ESIGN_HOST_MARKS = ("letsign", "电子牵", "esign", "qiyuesuo", "fadada")
     # ⚠️⚠️ 2026-09-23 修（真 bug，实测崩溃）：下面 B 判据原来引用了 `b_already_marked`，
     #    但这个变量**从来没有定义过**（既不在这行前面、也不在函数签名里、也不是全局）→
     #    `NameError: name 'b_already_marked' is not defined`，整个流程在这里**崩掉**。
@@ -1344,6 +1368,15 @@ async def step3_sign_contract(page, ctx, folders=None):
                 body = await pg.evaluate("document.body.innerText")
             except Exception:
                 continue
+            try:
+                _u = (pg.url or "").lower()
+            except Exception:
+                _u = ""
+            # ★ 硬护栏：只有**真的到过电子签平台**（第三方域名）才算数。
+            #   番茄自家页面上出现「文件签署」「登录」等词，一律**不算**签署成功。
+            if any(k in _u for k in ESIGN_HOST_MARKS):
+                real_esign_seen = True
+
             if any(k in body for k in SIGN_DONE_KEYWORDS):
                 log("    ✓ 检测到电子合同签署完成 → 发布成功")
                 if folders:
@@ -1351,7 +1384,9 @@ async def step3_sign_contract(page, ctx, folders=None):
                     log(f"    ✓ 已写入 published.json（防重复）：{added}")
                 return True
             # ★ C 判据：曾经见过签署页，现在这一页变成了登录页 → 也是签完跳走
-            if sign_seen_once and any(k in body for k in login_left_marks):
+            #   ⚠️ 2026-09-26 加 `real_esign_seen` 硬护栏：没真进过电子签就不许判成功，
+            #      否则番茄自家「已跳转签约页」那一屏就能骗过判据（本轮踩到）。
+            if sign_seen_once and real_esign_seen and any(k in body for k in login_left_marks):
                 log("    ✓ 签署页已变为登录页（用户证实：签完会跳回登录）→ 判定签署完成")
                 if folders:
                     added = mark_published(list(folders))
@@ -1359,6 +1394,21 @@ async def step3_sign_contract(page, ctx, folders=None):
                 return True
             if any(k in body for k in ("电子牵", "letsign", "选择签章", "意愿认证", "文件签署")):
                 esign_seen = True
+
+        # ★★ 2026-09-26 新增：反向证据护栏（防「误判发布成功」再犯）
+        #   只要**屏幕上还能看到「跳转授权」按钮**，就证明跳转尚未发生 →
+        #   此时无论什么判据都不许判成功。这是比关键词更硬的证据：
+        #   按钮是流程「还没走完」的直接体现。
+        try:
+            _jump = page.locator("button:has-text('跳转授权')")
+            _n_jump = await _jump.count()
+        except Exception:
+            _n_jump = 0
+        if _n_jump > 0 and not real_esign_seen:
+            # 明确压住本轮的所有"成功"判定，只在日志里如实说明
+            if time.time() - last_hint > 30:
+                log("    · 页面上仍有「跳转授权」按钮 → 跳转未发生，不判定为签署完成")
+                last_hint = time.time()
 
         # ② 兜底补点（用户实测：合同生成后**有时自动跳转，有时要手动点「跳转授权」**）：
         #    只在「压根没有任何签署页」时补点，且全程最多 1 次 —— 绝不重复跳。
