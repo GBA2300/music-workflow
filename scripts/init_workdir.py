@@ -86,7 +86,7 @@ MAKE_DIRS = ["library", "lyrics"]
 
 
 def check_deps():
-    """检查 playwright / pillow 是否可导入；返回 (ok, msg)。"""
+    """检查 playwright / pillow 是否可导入；返回 problems 列表。"""
     problems = []
     try:
         import playwright  # noqa: F401
@@ -97,6 +97,36 @@ def check_deps():
     except Exception:
         problems.append("pillow 未安装")
     return problems
+
+
+# ── ★ 代理环境变量检测（2026-09-29 加）───────────────────────────────────────
+# 本 skill 全程访问国内站（番茄 novelfm / 妙响 douyin / 飞书），**不需要代理**。
+# 但若环境里残留了失效的 HTTP_PROXY / HTTPS_PROXY，pip 安装和 playwright 下载
+# 浏览器都可能被拖死，报错还指向「代理」，让新手误判成「网不通」。
+# 这里在装依赖之前就把话说明白，避免使用者在最没头绪的第一步卡住。
+PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy")
+
+
+def check_proxy_env():
+    """返回当前生效的代理环境变量 {名: 值}；用于安装前提醒。"""
+    import os
+    return {k: os.environ.get(k) for k in PROXY_VARS if os.environ.get(k)}
+
+
+def warn_if_proxy():
+    """若检测到代理环境变量，打印友好提醒（不阻断，只提示）。"""
+    live = check_proxy_env()
+    if not live:
+        return
+    print("")
+    print("ℹ️  检测到代理环境变量（本 skill 不需要代理，访问的都是国内站）：")
+    for k, v in live.items():
+        print(f"      {k} = {v}")
+    print("    如果接下来 pip 安装或浏览器下载卡住/报 ProxyError，")
+    print("    先清掉这些变量再重试（Windows: setx HTTP_PROXY \"\" 后重开终端；")
+    print("    或临时：在本窗口执行 set HTTP_PROXY= && set HTTPS_PROXY=）")
+    print("")
 
 
 def main():
@@ -116,11 +146,13 @@ def main():
         print(f"    {py_exe} -m playwright install chromium")
         for p in problems:
             print("   - " + p)
+        warn_if_proxy()          # ★ 装依赖前先把代理变量说清楚（最易卡的一步）
         if args.check:
             return
         print("（仍会继续创建目录；但首次运行前请先装好依赖）")
     else:
         print("✅ 依赖就绪：playwright / pillow 均可导入")
+        warn_if_proxy()          # ★ 依赖齐备时也提一句（不阻断，纯提示）
 
     if args.check:
         return

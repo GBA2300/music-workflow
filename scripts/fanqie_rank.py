@@ -95,6 +95,35 @@ def _requests():
         raise SystemExit(2)
 
 
+# ── ★ 无代理直连（2026-09-29 加，为「公开分发后不开代理也能跑」） ──────────────
+# 番茄接口是**国内站**，本该直连。但 requests 默认 trust_env=True，会自动读
+# HTTP_PROXY / HTTPS_PROXY 环境变量——若使用者的运行环境注入了失效的代理
+# （实测 WorkBuddy 会注入 http://127.0.0.1:55834），请求会被送去一个不存在的
+# 端口，报错还指向「代理连不上」，让人误判成「网不通」。
+# 这里显式清空 proxies + 关掉 trust_env，保证**永远直连、不受环境干扰**。
+NO_PROXY_HINT = ("本接口为国内站（api5-lite-sinfonlineb.novelfm.com），无需代理。\n"
+                 "  若你正开着代理软件（Clash / v2ray 等）的「全局模式」，请切到「规则模式」，\n"
+                 "  或把 novelfm.com 加入直连名单后再试。")
+
+
+def _direct_post(url: str, **kw):
+    """直连 POST：绕过所有环境变量代理，返回 requests.Response。"""
+    requests = _requests()
+    sess = requests.Session()
+    sess.trust_env = False          # 不读 HTTP_PROXY / HTTPS_PROXY / ~/.netrc
+    sess.proxies = {}               # 显式清空，双保险
+    try:
+        return sess.post(url, **kw)
+    except requests.exceptions.ProxyError:
+        # trust_env 关了还报 ProxyError → 是 requests 版本行为差异，给出人话提示
+        print("\n[错误] 请求被代理拦截。\n  " + NO_PROXY_HINT, file=sys.stderr)
+        raise SystemExit(3)
+    except requests.exceptions.ConnectionError as e:
+        print("\n[错误] 连不上番茄接口。\n  " + NO_PROXY_HINT, file=sys.stderr)
+        print("  原始报错：%s" % e, file=sys.stderr)
+        raise SystemExit(3)
+
+
 def _query() -> str:
     return ("?aid=%s&update_version_code=%s&device_platform=%s&channel=%s"
             % (AID, UPDATE_VERSION_CODE, DEVICE_PLATFORM, CHANNEL))
@@ -107,10 +136,9 @@ def _headers() -> dict:
 
 def fetch_ranks() -> list[dict]:
     """取榜单分类列表（APP 排行榜页顶部的那排 tab）。"""
-    requests = _requests()
     url = API_HOST + "/novelfm/bookmall/top/tabs/v1/" + _query()
-    r = requests.post(url, headers=_headers(), json={"scene": SCENE_TOP_TABS},
-                      timeout=TIMEOUT, verify=False)
+    r = _direct_post(url, headers=_headers(), json={"scene": SCENE_TOP_TABS},
+                     timeout=TIMEOUT, verify=False)
     r.raise_for_status()
     j = r.json()
     if j.get("code") != 0:
@@ -121,12 +149,11 @@ def fetch_ranks() -> list[dict]:
 
 def fetch_rank_songs(label_id: str, limit: int = 50) -> list[dict]:
     """取某个榜的歌曲列表（带官方名次与播放量）。"""
-    requests = _requests()
     url = API_HOST + "/novelfm/bookmall/recommend/book/list/v1/" + _query()
     body = {"scene": SCENE_RANK_LIST, "limit": limit, "offset": 0,
             "label_id": str(label_id)}
-    r = requests.post(url, headers=_headers(), json=body,
-                      timeout=TIMEOUT, verify=False)
+    r = _direct_post(url, headers=_headers(), json=body,
+                     timeout=TIMEOUT, verify=False)
     r.raise_for_status()
     j = r.json()
     if j.get("code") != 0:

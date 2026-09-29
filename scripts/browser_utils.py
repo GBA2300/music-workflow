@@ -32,6 +32,15 @@ STEALTH_ARGS = [
     "--disable-session-crashed-bubble",
     "--noerrdialogs",
     "--disable-features=InfiniteSessionRestore",
+    # ★ 2026-09-29 加（为「公开分发后不开代理也能跑」）：
+    #    Chromium 默认会跟随**系统级代理设置**。使用者的电脑若开着代理软件
+    #    （Clash 全局模式 / 系统代理）而代理又不可用，浏览器连国内站都会失败，
+    #    表现为「页面一直转圈 / ERR_PROXY_CONNECTION_FAILED」。
+    #    本工具的目标站（番茄 novelfm、抖音 douyin、飞书 feishu）**全是国内站**，
+    #    一律直连最快最稳 —— 用下面两个参数强制绕过任何代理。
+    #    ⚠️ 这是「明确直连」，不是「禁用网络」：国内站照常访问，只是不走代理。
+    "--no-proxy-server",
+    "--proxy-bypass-list=*",
 ]
 
 

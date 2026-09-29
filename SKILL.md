@@ -219,8 +219,31 @@ agent_created: true
   `%LOCALAPPDATA%/music-workflow/profiles/`，**任何脚本都不得再写 `ROOT / "profile"` 这类代码**（已全量替换）。
   本次已全量扫描确认 skill 目录内无登录态文件。
 
-> **推送本仓库到 GitHub**：走 `github-push-cn` 技能（含全通道体检 + 三项自检）。
-> ⚠️ 若 Clash 没跑而直连可用，推与核对**必须用同一套参数**，否则核对会假报连不上：
+### ★ 使用者须知：本 skill **完全不需要代理**（2026-09-29 确立）
+
+全流程访问的都是**国内站**，任何网络环境（含完全不开代理）都能跑通。已实测直连可达：
+
+| 环节 | 目标站 | 直连 |
+|---|---|---|
+| 榜单研究 | `api5-lite-sinfonlineb.novelfm.com`（番茄 APP 接口） | ✅ |
+| 歌词拆解 | `www.novelfm.com` | ✅ |
+| 生成音乐 | `music.douyin.com`（妙响） | ✅ |
+| 上传发布 | `www.novelfm.com` + 飞书电子合同 | ✅ |
+| 电子签 | `s.letsign.com`（电子牵） | ✅ |
+
+**为防被代理拖累，代码已做三重直连保护**（使用者无需任何配置）：
+1. `scripts/fanqie_rank.py` —— `requests` 显式 `trust_env=False` + `proxies={}`，
+   **免疫 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量**（否则环境里若有失效代理会直接 `ProxyError`）
+2. `scripts/browser_utils.py` —— Chromium 启动带 `--no-proxy-server` + `--proxy-bypass-list=*`，
+   **绕过系统级代理设置**
+3. 两者都是「明确直连」不是「禁网」：国内站照常访问，只是不走代理
+
+> ⚠️ **若你正开着代理软件的「全局模式」，请切到「规则模式」**（或把 `novelfm.com` / `douyin.com`
+> 加进直连名单）。全局模式下代理节点若不通，反而会把本来能通的国内站也拖死。
+
+> **【仅仓库维护者】推送本仓库到 GitHub**：走 `github-push-cn` 技能（含全通道体检 + 三项自检）。
+> 使用者**不需要**看这一段 —— 与跑流程无关。
+> 本机（作者）若 Clash 没跑而直连可用，推与核对**必须用同一套参数**，否则核对会假报连不上：
 > ```bash
 > git -c http.proxy= -c https.proxy= push      origin master
 > git -c http.proxy= -c https.proxy= ls-remote origin refs/heads/master   # ★ 照抄同一套
