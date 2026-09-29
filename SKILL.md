@@ -219,6 +219,13 @@ agent_created: true
   `%LOCALAPPDATA%/music-workflow/profiles/`，**任何脚本都不得再写 `ROOT / "profile"` 这类代码**（已全量替换）。
   本次已全量扫描确认 skill 目录内无登录态文件。
 
+> **推送本仓库到 GitHub**：走 `github-push-cn` 技能（含全通道体检 + 三项自检）。
+> ⚠️ 若 Clash 没跑而直连可用，推与核对**必须用同一套参数**，否则核对会假报连不上：
+> ```bash
+> git -c http.proxy= -c https.proxy= push      origin master
+> git -c http.proxy= -c https.proxy= ls-remote origin refs/heads/master   # ★ 照抄同一套
+> ```
+
 ## 隐私红线（登录态绝不随 skill 分发）
 
 本 skill 给很多人用，每人各自登录自己的账号。最重要的安全约束：
